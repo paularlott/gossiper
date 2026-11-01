@@ -182,3 +182,26 @@ func TestFiniteStream(t *testing.T) {
 		t.Errorf("without a token: %d", r.code)
 	}
 }
+
+// A line is one JSON object and nothing else: one followed by garbage, or by a second object, is refused as a whole
+// and published neither in part nor whole; space around it is fine.
+func TestStreamLineIsOneObject(t *testing.T) {
+	e := newEnv(t, Config{Anonymous: true})
+	sub := e.openStream(t, http.MethodGet, url.Values{"topic": {"https://s.test/o"}}, nil, "")
+	c := e.stream(t, tokenFor(t, all, nil))
+	for i, line := range []string{
+		`{"topic":["https://s.test/o"],"data":"first"} garbage`,
+		`{"topic":["https://s.test/o"],"data":"one"}{"topic":["https://s.test/o"],"data":"two"}`,
+		`{"topic":["https://s.test/o"],"data":"x"},`,
+	} {
+		c.send(t, line)
+		if a := c.answer(t); a.Line != i+1 || a.Status != 400 || a.ID != "" {
+			t.Fatalf("line %d %q: %+v", i+1, line, a)
+		}
+	}
+	c.send(t, "  "+`{"topic":["https://s.test/o"],"data":"ok"}`+"\t ")
+	if a := c.answer(t); a.ID == "" || a.Status != 0 {
+		t.Fatalf("a line with space around it: %+v", a)
+	}
+	sub.expect("ok") // nothing of the refused lines
+}

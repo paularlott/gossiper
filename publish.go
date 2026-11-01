@@ -407,7 +407,8 @@ func (h *Hub) decodeLine(b []byte, g *grants) (*Update, int, string) {
 	var bu lineUpdate
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&bu); err != nil {
+	// One JSON object, and nothing after it: neither trailing garbage nor a second object.
+	if err := dec.Decode(&bu); err != nil || dec.Decode(&struct{}{}) != io.EOF {
 		return nil, http.StatusBadRequest, "Invalid update"
 	}
 	u := &Update{Topics: bu.Topic, Data: bu.Data, ID: bu.ID, Type: bu.Type, Private: bu.Private, Replicas: bu.Replicas}
