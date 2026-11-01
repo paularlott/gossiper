@@ -1,10 +1,13 @@
 package gossiper
 
 import (
+	"context"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -710,6 +713,69 @@ func TestSubscribeNegotiation(t *testing.T) {
 		r := e.do(t, methodQuery, e.hubURL(), hdr, q)
 		if r.code != tc.want || r.header.Get("Accept-Query") != formMediaType {
 			t.Errorf("QUERY with Content-Type %q: %d, Accept-Query %q; want %d", tc.ct, r.code, r.header.Get("Accept-Query"), tc.want)
+		}
+	}
+}
+
+// slowWriter is a response writer whose first write blocks until after a time, and that records when each write
+// happened.
+type slowWriter struct {
+	hdr   http.Header
+	until time.Time
+	mu    sync.Mutex
+	first bool
+	at    []time.Time
+	data  []string
+}
+
+func (w *slowWriter) Header() http.Header { return w.hdr }
+func (w *slowWriter) WriteHeader(int)     {}
+func (w *slowWriter) Flush()              {}
+func (w *slowWriter) Write(b []byte) (int, error) {
+	w.mu.Lock()
+	first := !w.first
+	w.first = true
+	w.mu.Unlock()
+	if first {
+		time.Sleep(time.Until(w.until))
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.at, w.data = append(w.at, time.Now()), append(w.data, string(b))
+	return len(b), nil
+}
+
+// A stream ends when its token expires, the replay included: a client slow to take the first bytes is not sent the
+// private history afterwards.
+func TestReplayStopsAtTokenExpiry(t *testing.T) {
+	h := newHub(t, Config{CloseOnTokenExpiry: true})
+	for i := range 5 {
+		if _, err := h.Publish(context.Background(), &Update{Topics: []string{"https://x.test/p"}, Data: fmt.Sprint("secret ", i), Private: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exp := time.Unix(time.Now().Unix()+2, 0) // JWT expiry has whole seconds
+	claims := mercureClaims(nil, []string{"https://x.test/p"})
+	claims["exp"] = exp.Unix()
+	tok := signJWT(t, testSecret, claims)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req := httptest.NewRequestWithContext(ctx, http.MethodGet, hubPath+"?topic="+url.QueryEscape("https://x.test/p"), nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Last-Event-ID", earliest)
+	w := &slowWriter{hdr: http.Header{}, until: exp.Add(300 * time.Millisecond)}
+	done := make(chan struct{})
+	go func() { h.ServeHTTP(w, req); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(4 * time.Second):
+		t.Fatal("the stream did not end at the token's expiry")
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for i, d := range w.data {
+		if strings.Contains(d, "secret") && w.at[i].After(exp) {
+			t.Errorf("a private update was written %v after the token expired: %q", w.at[i].Sub(exp), d)
 		}
 	}
 }

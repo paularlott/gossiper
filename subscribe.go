@@ -271,6 +271,24 @@ func (h *Hub) serveSubscribe(w http.ResponseWriter, r *http.Request) {
 		s.abortMu.Unlock()
 	}()
 
+	// A Mercure 1.0 token ends its stream when it expires (a draft-07 one when configured to), and every stream ends
+	// after MaxConnectionLifetime. From the start: the replay, and a write blocked on a stalled client, end then too.
+	var end time.Time
+	if g != nil && !g.expiry.IsZero() && (g.modern || h.cfg.CloseOnTokenExpiry) {
+		end = g.expiry
+	}
+	if l := h.cfg.MaxConnectionLifetime; l > 0 && (end.IsZero() || time.Now().Add(l).Before(end)) {
+		end = time.Now().Add(l)
+	}
+	ended := make(chan struct{})
+	if !end.IsZero() {
+		t := time.AfterFunc(time.Until(end), func() {
+			close(ended)
+			s.abortWrite() // a write in progress fails now
+		})
+		defer t.Stop()
+	}
+
 	// Registered before the history is read: an update applied meanwhile is in the queue, the history, or both
 	// (the duplicates are skipped below), never in neither.
 	replay, at := h.replayFor(s, cursor)
@@ -280,16 +298,22 @@ func (h *Hub) serveSubscribe(w http.ResponseWriter, r *http.Request) {
 	// most every quarter of the write timeout, not at every batch (each move is a change to a runtime timer, which
 	// thousands of streams writing at once contend for); it is set a quarter beyond, so a batch always has the whole
 	// timeout.
+	// The deadline is never past the stream's end.
 	var deadline time.Time
 	arm := func(now time.Time) bool {
 		if now.After(deadline.Add(-h.cfg.WriteTimeout)) {
 			deadline = now.Add(h.cfg.WriteTimeout + h.cfg.WriteTimeout/4)
+			if !end.IsZero() && end.Before(deadline) {
+				deadline = end
+			}
 			_ = rc.SetWriteDeadline(deadline)
 		}
 		select { // set after an abort, the deadline above would undo it
 		case <-s.closed:
 			return false
 		case <-s.kicked:
+			return false
+		case <-ended:
 			return false
 		default:
 			return true
@@ -315,6 +339,9 @@ func (h *Hub) serveSubscribe(w http.ResponseWriter, r *http.Request) {
 	if len(replay) > 0 {
 		sent = make(map[key]struct{}, len(replay))
 		for i, u := range replay {
+			if i%batchMax == 0 && !arm(time.Now()) { // the stream may end (a token expiring) during a long replay
+				return
+			}
 			sent[key{u.Origin, u.Stamp}] = struct{}{}
 			flush := i == len(replay)-1 || (i+1)%batchMax == 0
 			if !write(u.encoded, flush) {
@@ -334,20 +361,6 @@ func (h *Hub) serveSubscribe(w http.ResponseWriter, r *http.Request) {
 		t := time.NewTicker(h.cfg.Heartbeat)
 		defer t.Stop()
 		heartbeat = t.C
-	}
-	// A Mercure 1.0 token ends its stream when it expires; a draft-07 one when configured to.
-	var end time.Time
-	if g != nil && !g.expiry.IsZero() && (g.modern || h.cfg.CloseOnTokenExpiry) {
-		end = g.expiry
-	}
-	if l := h.cfg.MaxConnectionLifetime; l > 0 && (end.IsZero() || time.Now().Add(l).Before(end)) {
-		end = time.Now().Add(l)
-	}
-	var expired <-chan time.Time
-	if !end.IsZero() {
-		t := time.NewTimer(time.Until(end))
-		defer t.Stop()
-		expired = t.C
 	}
 	ctx := r.Context()
 	// writeBatch writes u and what else is queued (up to batchMax), and flushes.
@@ -403,7 +416,7 @@ func (h *Hub) serveSubscribe(w http.ResponseWriter, r *http.Request) {
 			return
 		case <-s.kicked:
 			return
-		case <-expired:
+		case <-ended:
 			return
 		case <-heartbeat:
 			if !arm(time.Now()) || !write([]byte(":\n"), true) {
