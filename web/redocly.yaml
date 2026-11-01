@@ -1,0 +1,11 @@
+# Redocly CLI configuration: lints the admin API description (npm run lint:api, part of npm run build).
+# The rendered reference at /api-docs/ is Redoc 3, bundled by Vite (vite.config.js, src/api-docs.js).
+apis:
+  gossiper@v1:
+    root: ./openapi/openapi.yaml
+
+extends:
+  - recommended
+
+# No usage reports to Redocly: builds run on machines without internet access.
+telemetry: off

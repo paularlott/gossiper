@@ -1,0 +1,344 @@
+openapi: 3.1.0
+info:
+  title: Gossiper admin API
+  version: "1"
+  license:
+    name: MIT
+    identifier: MIT
+  description: |-
+    Add, change and remove tenants while the server runs. A tenant has a Mercure hub of its own, picked by host name, with its own keys, isolated from every other tenant.
+
+    The API is served when the server has a database (`--database`) and an API token (`--api-token`). Changes are stored in the database of the node that receives them and replicate to every node of the cluster group, each of which applies them at once, without a restart: there is no need to call every node.
+
+    Tenants can also come from the tenants file (`--tenants-file`). The server serves both: those of the file are read-only here (source `file`) and a tenant of the database cannot take the name of one. A change that would leave the tenants inconsistent (a host or key given to two tenants) is refused with 409 and changes nothing.
+
+    Secrets are write-only: HMAC keys are never returned, so a PUT, which replaces the tenant, must carry them again. Public keys (PEM) are returned.
+
+    Authenticate with the API token as a bearer token: `Authorization: Bearer <token>`. Failed authentications are limited to 60 per address and minute; past that every request from the address answers 429 for the rest of the minute.
+servers:
+  - url: /
+    description: this server
+security:
+  - bearer: []
+tags:
+  - name: Tenants
+    description: Tenants with their hosts and Mercure hub settings.
+  - name: System
+    description: The API description and the state of the database.
+paths:
+  /api/tenants:
+    get:
+      tags: [Tenants]
+      summary: List the tenants
+      description: Every tenant, from the tenants file and the database, by name.
+      operationId: list_tenants
+      responses:
+        "200":
+          description: The tenants
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tenants]
+                properties:
+                  tenants:
+                    type: array
+                    items: {$ref: "#/components/schemas/Tenant"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "429": {$ref: "#/components/responses/TooManyRequests"}
+    post:
+      tags: [Tenants]
+      summary: Create a tenant
+      description: Create a tenant. Its name must be free, in the database and the tenants file.
+      operationId: create_tenant
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/TenantInput"}
+      responses:
+        "201":
+          description: Created
+          headers:
+            Location:
+              description: The tenant's URL
+              schema: {type: string}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Tenant"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "429": {$ref: "#/components/responses/TooManyRequests"}
+  /api/tenants/{tenant}:
+    parameters:
+      - {$ref: "#/components/parameters/Tenant"}
+    get:
+      tags: [Tenants]
+      summary: Get a tenant
+      operationId: get_tenant
+      responses:
+        "200":
+          description: The tenant
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Tenant"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "429": {$ref: "#/components/responses/TooManyRequests"}
+    put:
+      tags: [Tenants]
+      summary: Create or replace a tenant
+      description: |-
+        Create the tenant, or replace its hosts and Mercure settings. A name in the body, if any, must be the one in the path.
+
+        Changing a tenant's Mercure keys or settings restarts its hub on every node: open subscriber streams end and clients reconnect (with Last-Event-ID, missing nothing the hub's history still holds). Changing only its hosts keeps the streams open.
+      operationId: put_tenant
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/TenantInput"}
+      responses:
+        "200":
+          description: Replaced
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Tenant"}
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Tenant"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "429": {$ref: "#/components/responses/TooManyRequests"}
+    delete:
+      tags: [Tenants]
+      summary: Delete a tenant
+      description: Delete the tenant. Its hub closes on every node.
+      operationId: delete_tenant
+      responses:
+        "204":
+          description: Deleted
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "429": {$ref: "#/components/responses/TooManyRequests"}
+  /api/status:
+    get:
+      tags: [System]
+      summary: The database and its replication
+      operationId: get_status
+      responses:
+        "200":
+          description: The status
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Status"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "429": {$ref: "#/components/responses/TooManyRequests"}
+  /api/openapi.json:
+    get:
+      tags: [System]
+      summary: This API description
+      description: The OpenAPI document, also rendered at /api-docs/. No token needed.
+      operationId: get_openapi
+      security: []
+      responses:
+        "200":
+          description: The OpenAPI document
+          content:
+            application/json:
+              schema: {type: object}
+        "404":
+          description: The document was not built into this binary
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+      description: The server's API token (`--api-token`).
+  parameters:
+    Tenant:
+      name: tenant
+      in: path
+      required: true
+      description: The tenant's name
+      schema: {$ref: "#/components/schemas/TenantName"}
+  responses:
+    BadRequest:
+      description: The request is malformed or a value is not valid (an unknown algorithm, an HMAC secret shorter than its algorithm needs, a key URL that is not https, a missing host)
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+    Unauthorized:
+      description: No token, or not the API token
+      headers:
+        WWW-Authenticate:
+          schema: {type: string}
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+    NotFound:
+      description: No such tenant
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+    Conflict:
+      description: The tenant comes from the tenants file, the name is taken, or the change clashes with another tenant (a host or a key)
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+    TooManyRequests:
+      description: Too many failed authentications from this address
+      headers:
+        Retry-After:
+          schema: {type: integer}
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: What went wrong
+    TenantName:
+      type: string
+      pattern: "^[A-Za-z0-9._-]{1,128}$"
+      description: Letters, digits, '.', '_' and '-'
+    TenantInput:
+      type: object
+      additionalProperties: false
+      required: [hosts, mercure]
+      description: A tenant needs at least one host, which picks its hub, and Mercure settings (an empty object takes the server's).
+      properties:
+        name:
+          $ref: "#/components/schemas/TenantName"
+        hosts:
+          type: array
+          minItems: 1
+          description: Host names (no port) at which clients reach the tenant's hub; each belongs to one tenant
+          items: {type: string}
+        mercure: {$ref: "#/components/schemas/MercureInput"}
+    Tenant:
+      type: object
+      required: [name, source]
+      properties:
+        name:
+          $ref: "#/components/schemas/TenantName"
+        source:
+          type: string
+          enum: [file, database]
+          description: Where the tenant is defined; tenants of the file are read-only here
+        hosts:
+          type: array
+          items: {type: string}
+        mercure: {$ref: "#/components/schemas/Mercure"}
+        problem:
+          type: string
+          description: Why a tenant of the database is not served (it clashes with an older tenant), when it is not. This happens only when two nodes accept clashing changes at the same moment; change or delete it to resolve it.
+    MercureInput:
+      type: object
+      additionalProperties: false
+      description: The tenant's Mercure hub; the server's other settings (timeouts, history, CORS) apply to it too.
+      properties:
+        publisher_key:
+          type: string
+          description: Publishers' JWT key, an HMAC secret (at least as long as its algorithm's hash, 32 bytes for HS256, unless the server allows weak keys) or a PEM public key; write-only when HMAC
+        publisher_alg:
+          type: string
+          description: Its algorithm (default HS256)
+          examples: [HS256, RS256, ES256, EdDSA]
+        publisher_jwks_url:
+          type: string
+          format: uri
+          description: Publishers' JWK Set URL, instead of a key; https unless the server allows insecure key URLs
+        subscriber_key:
+          type: string
+          description: Subscribers' JWT key (default the publisher key); write-only when HMAC
+        subscriber_alg:
+          type: string
+        subscriber_jwks_url:
+          type: string
+          format: uri
+        trusted_issuers:
+          type: array
+          items: {type: string}
+          description: iss values accepted in Mercure 1.0 tokens
+        authorization_servers:
+          type: array
+          items: {type: string}
+          description: OAuth authorization servers issuing Mercure 1.0 tokens (keys found by discovery)
+        resource_identifier:
+          type: string
+          description: The aud Mercure 1.0 tokens must carry
+        hub_url:
+          type: string
+          description: The hub's public URL, base for relative topics
+        anonymous:
+          type: boolean
+          description: Subscribers without a token may receive public updates
+        subscriptions:
+          type: boolean
+          description: Subscription events and the subscriptions API
+        cors_origins:
+          type: array
+          items: {type: string}
+          description: Origins allowed cross-origin, with credentials when listed by name ("*" for any, without credentials). Replaces the server's.
+        publish_origins:
+          type: array
+          items: {type: string}
+          description: Origins allowed to publish with the authorization cookie. Replaces the server's.
+        cookie_name:
+          type: string
+          description: The draft-07 authorization cookie's name. Replaces the server's.
+        access_token_cookie_name:
+          type: string
+          description: The Mercure 1.0 access token cookie's name. Replaces the server's.
+    Mercure:
+      allOf:
+        - $ref: "#/components/schemas/MercureInput"
+        - type: object
+          properties:
+            publisher_key_set:
+              type: boolean
+              description: An HMAC publisher key is set (it is not returned)
+            subscriber_key_set:
+              type: boolean
+              description: An HMAC subscriber key is set (it is not returned)
+    Status:
+      type: object
+      required: [node, records, tombstones, tenants]
+      properties:
+        node:
+          type: string
+          description: This node's id
+        records:
+          type: integer
+          description: Live records in this node's database
+        tombstones:
+          type: integer
+          description: Deletions remembered, so that a node that missed one cannot bring the record back
+        peers:
+          type: integer
+          description: Other nodes of the cluster group
+        last_sync:
+          type: string
+          format: date-time
+          description: When this node last compared its database with a peer's
+        tenants:
+          type: object
+          required: [file, database]
+          properties:
+            file:
+              type: integer
+            database:
+              type: integer

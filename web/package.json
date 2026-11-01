@@ -1,0 +1,14 @@
+{
+  "name": "gossiper-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "npm run lint:api && vite build",
+    "lint:api": "REDOCLY_SUPPRESS_UPDATE_NOTICE=true redocly lint --format=stylish"
+  },
+  "devDependencies": {
+    "@redocly/cli": "2.66.0",
+    "redoc": "3.0.1",
+    "vite": "8.3.4"
+  }
+}

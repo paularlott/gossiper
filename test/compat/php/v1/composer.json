@@ -1,0 +1,13 @@
+{
+    "name": "gossiper/compat-app-v1",
+    "description": "Mercure 1.0 (symfony/mercure >= 0.9) test app for the Gossiper protocol-compatibility suite",
+    "type": "project",
+    "require": {
+        "php": ">=8.2",
+        "lcobucci/jwt": "^5.0",
+        "symfony/http-client": "^7.0",
+        "symfony/http-foundation": "^7.0",
+        "symfony/mercure": "^0.9"
+    },
+    "config": { "sort-packages": true }
+}

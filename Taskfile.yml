@@ -1,0 +1,286 @@
+version: "3"
+
+vars:
+  PROJECT_NAME: gossiper
+  MAIN: ./cmd/gossiper
+  PLATFORMS:
+    - linux/amd64
+    - linux/arm64
+    - darwin/amd64
+    - darwin/arm64
+    - windows/amd64
+    - windows/arm64
+  BUILT_AT:
+    sh: date +%Y%m%d.%H%M%S%z
+  BUILD_FLAGS: '-ldflags="-s -w -X github.com/paularlott/gossiper/build.Date={{.BUILT_AT}}" -trimpath'
+  OUTPUT_DIR: bin
+  VERSION:
+    sh: go run ./scripts/getversion
+  REGISTRY: '{{.REGISTRY | default "paularlott"}}'
+  HUB: '{{.HUB | default "registry-1.docker.io/"}}'
+  BUILD_WITH:
+    sh: |
+      if [ -n "${BUILD_WITH}" ]; then
+        echo "${BUILD_WITH}"
+      elif command -v docker >/dev/null 2>&1; then
+        echo "docker"
+      elif command -v podman >/dev/null 2>&1; then
+        echo "podman"
+      elif command -v container >/dev/null 2>&1; then
+        echo "apple"
+      else
+        echo "none"
+      fi
+  PLATFORM_ARG: "--platform linux/amd64,linux/arm64"
+
+tasks:
+  default:
+    desc: Build the binary for all platforms (default task)
+    deps: [all]
+
+  webassets:
+    desc: Build the API description and reference (web/dist, embedded in the binary) with Node.js
+    dir: web
+    cmds:
+      - npm ci --no-audit --no-fund --ignore-scripts
+      - npm run build
+    sources:
+      - openapi/**/*
+      - api-docs/**/*
+      - src/**/*
+      - vite.config.js
+      - redocly.yaml
+      - package.json
+      - package-lock.json
+    generates:
+      - dist/openapi.json
+
+  apidocs-lint:
+    desc: Lint the OpenAPI description (web/openapi/openapi.yaml) with Redocly CLI
+    dir: web
+    cmds:
+      - npm run lint:api --silent
+
+  build:
+    desc: Build the binary for the current platform into bin/
+    deps: [webassets]
+    cmds:
+      - go build {{.BUILD_FLAGS}} -o {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}{{exeExt}} {{.MAIN}}
+    sources:
+      - ./**/*.go
+      - go.mod
+      - go.sum
+      - web/dist/**/*
+    generates:
+      - "{{.OUTPUT_DIR}}/{{.PROJECT_NAME}}{{exeExt}}"
+
+  build-amd64:
+    desc: Build the binary for linux/amd64 into bin/
+    deps: [webassets]
+    env:
+      GOOS: linux
+      GOARCH: amd64
+      CGO_ENABLED: "0"
+    cmds:
+      - go build {{.BUILD_FLAGS}} -o {{.OUTPUT_DIR}}/{{.PROJECT_NAME}} {{.MAIN}}
+
+  build-arm64:
+    desc: Build the binary for linux/arm64 into bin/
+    deps: [webassets]
+    env:
+      GOOS: linux
+      GOARCH: arm64
+      CGO_ENABLED: "0"
+    cmds:
+      - go build {{.BUILD_FLAGS}} -o {{.OUTPUT_DIR}}/{{.PROJECT_NAME}} {{.MAIN}}
+
+  all:
+    desc: Build zipped binaries for every platform into bin/
+    deps: [webassets]
+    cmds:
+      - task: build-platform
+        vars: { PLATFORM: "{{.ITEM}}" }
+        for:
+          var: PLATFORMS
+
+  build-platform:
+    internal: true
+    label: "Building for {{.PLATFORM}}"
+    vars:
+      GOOS: '{{splitList "/" .PLATFORM | first}}'
+      GOARCH: '{{splitList "/" .PLATFORM | last}}'
+      EXT: '{{if eq .GOOS "windows"}}.exe{{end}}'
+      ZIP_FILE: "{{$.PROJECT_NAME}}_{{.GOOS}}_{{.GOARCH}}.zip"
+      STAGE: "{{$.OUTPUT_DIR}}/{{.GOOS}}_{{.GOARCH}}"
+    env:
+      GOOS: "{{.GOOS}}"
+      GOARCH: "{{.GOARCH}}"
+      CGO_ENABLED: "0"
+    cmds:
+      - rm -rf {{.STAGE}} {{$.OUTPUT_DIR}}/{{.ZIP_FILE}}
+      - mkdir -p {{.STAGE}}
+      - go build {{$.BUILD_FLAGS}} -o {{.STAGE}}/{{$.PROJECT_NAME}}{{.EXT}} {{$.MAIN}}
+      - cp LICENSE.txt README.md {{.STAGE}}/
+      - cd {{.STAGE}} && zip -q ../{{.ZIP_FILE}} {{$.PROJECT_NAME}}{{.EXT}} LICENSE.txt README.md
+      - rm -rf {{.STAGE}}
+    sources:
+      - ./**/*.go
+      - go.mod
+      - go.sum
+      - web/dist/**/*
+    generates:
+      - "{{$.OUTPUT_DIR}}/{{.ZIP_FILE}}"
+
+  checksums:
+    desc: Write and show the SHA-256 checksums of the release archives
+    cmds:
+      - cd {{.OUTPUT_DIR}} && shasum -a 256 *.zip | tee checksums.txt
+
+  version:
+    desc: Show the version the release tasks will use
+    cmds:
+      - echo {{.VERSION}}
+
+  test:
+    desc: Run the unit and cluster tests
+    cmds:
+      - go test ./...
+
+  test:race:
+    desc: Run the unit and cluster tests with the race detector
+    cmds:
+      - go test -race -count=1 ./...
+
+  test:compat:
+    desc: Run the Mercure compatibility suite (FrankenPHP / Symfony, Docker)
+    cmds:
+      - docker compose -f test/compat/docker-compose.yml up -d --build --wait
+      - defer: docker compose -f test/compat/docker-compose.yml down -v
+      - go test -tags compat -count=1 -timeout 30m ./test/compat/
+
+  test:conformance:
+    desc: Run Mercure's conformance suite (fetched at run time, AGPL; needs Node.js) against a built gossiper
+    deps: [build]
+    cmds:
+      - scripts/conformance.sh {{.CLI_ARGS}}
+
+  test:failover:
+    desc: Run the failover suite (real processes, kill -9 and restarts)
+    cmds:
+      - go test -tags failover -count=1 -timeout 20m ./test/failover/
+
+  lint:
+    desc: Check formatting and vet the code
+    cmds:
+      - test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - go vet ./...
+      - task: apidocs-lint
+
+  legal:
+    desc: Generate the third-party license report in the project root (needs go-licenses)
+    cmds:
+      - go-licenses report --ignore github.com/paularlott/gossiper ./... > THIRD_PARTY_LICENSES.txt
+    sources:
+      - go.mod
+      - go.sum
+    generates:
+      - THIRD_PARTY_LICENSES.txt
+
+  clean:
+    desc: Remove the build artifacts
+    cmds:
+      - find {{.OUTPUT_DIR}} -mindepth 1 ! -name .gitignore -exec rm -rf {} +
+      - find web/dist -mindepth 1 ! -name .gitkeep -exec rm -rf {} +
+      - rm -f THIRD_PARTY_LICENSES.txt
+
+  run-server:
+    desc: "Run a single test node on :8080: a Mercure hub at localhost (streaming publish too), the admin API and its docs, metrics"
+    deps: [webassets]
+    vars:
+      DEV_KEY: dev-publisher-key-not-for-production-0123456789
+      API_TOKEN: dev-api-token
+    cmds:
+      - mkdir -p data
+      - cmd: |
+          echo "Hub:        http://localhost:8080/.well-known/mercure   (tenant \"dev\", examples/dev/tenants.json)"
+          echo "Token:      go run {{.MAIN}} token --key {{.DEV_KEY}} --publish '*' --subscribe '*'"
+          echo "Admin API:  curl -H 'Authorization: Bearer {{.API_TOKEN}}' http://localhost:8080/api/tenants"
+          echo "API docs:   http://localhost:8080/api-docs/"
+          echo "Metrics:    http://localhost:8080/metrics"
+          echo "Database:   data/dev.db (delete it to start over)"
+        silent: true
+      - >-
+        go run {{.MAIN}} serve --log-level=debug --metrics --pprof
+        --tenants-file examples/dev/tenants.json
+        --database data/dev.db --api-token {{.API_TOKEN}}
+    ignore_error: true
+
+  container:
+    desc: Build the container image for linux/amd64 and linux/arm64 and push it
+    method: none
+    cmds:
+      - |
+        echo "Detected container runtime: {{.BUILD_WITH}}"
+        echo "Building for platforms: {{.PLATFORM_ARG}}"
+
+        if [ "{{.BUILD_WITH}}" = "apple" ]; then
+          container build \
+            {{.PLATFORM_ARG}} \
+            --tag {{.REGISTRY}}/{{.PROJECT_NAME}}:{{.VERSION}} \
+            --build-arg BUILT_AT={{.BUILT_AT}} \
+            --build-arg DOCKER_HUB={{.HUB}} \
+            .
+          container image tag {{.REGISTRY}}/{{.PROJECT_NAME}}:{{.VERSION}} {{.REGISTRY}}/{{.PROJECT_NAME}}:latest
+          container images push {{.REGISTRY}}/{{.PROJECT_NAME}}:{{.VERSION}}
+          container images push {{.REGISTRY}}/{{.PROJECT_NAME}}:latest
+        elif [ "{{.BUILD_WITH}}" = "podman" ]; then
+          podman manifest create {{.REGISTRY}}/{{.PROJECT_NAME}}:{{.VERSION}}
+          podman build \
+            {{.PLATFORM_ARG}} \
+            --build-arg BUILT_AT={{.BUILT_AT}} \
+            --build-arg DOCKER_HUB={{.HUB}} \
+            --manifest {{.REGISTRY}}/{{.PROJECT_NAME}}:{{.VERSION}} \
+            .
+          podman tag {{.REGISTRY}}/{{.PROJECT_NAME}}:{{.VERSION}} {{.REGISTRY}}/{{.PROJECT_NAME}}:latest
+          podman manifest push {{.REGISTRY}}/{{.PROJECT_NAME}}:{{.VERSION}}
+          podman manifest push {{.REGISTRY}}/{{.PROJECT_NAME}}:latest
+        elif [ "{{.BUILD_WITH}}" = "docker" ]; then
+          docker buildx build \
+            {{.PLATFORM_ARG}} \
+            --tag {{.REGISTRY}}/{{.PROJECT_NAME}}:{{.VERSION}} \
+            --tag {{.REGISTRY}}/{{.PROJECT_NAME}}:latest \
+            --build-arg BUILT_AT={{.BUILT_AT}} \
+            --build-arg DOCKER_HUB={{.HUB}} \
+            --push \
+            .
+        else
+          echo "No container runtime found (docker, podman or Apple container)" >&2
+          exit 1
+        fi
+
+  release:
+    desc: Test, build every platform, then tag, push the container, create the GitHub release and show the checksums
+    preconditions:
+      - sh: test -z "$(git status --porcelain)"
+        msg: "the working tree has changes: commit or stash them first"
+    cmds:
+      - task: test:race
+      - task: all
+      - task: checksums
+      - task: tag
+      - task: container
+      - task: create-release
+
+  tag:
+    desc: Tag the current commit with the version (v<version>) and push the tag
+    cmds:
+      - git tag -a v{{.VERSION}} -m "Release {{.VERSION}}"
+      - git push origin v{{.VERSION}}
+    status:
+      - git tag -l v{{.VERSION}} | grep -q v{{.VERSION}}
+
+  create-release:
+    desc: Create the GitHub release with the archives and checksums
+    internal: true
+    cmds:
+      - gh release create v{{.VERSION}} {{.OUTPUT_DIR}}/*.zip {{.OUTPUT_DIR}}/checksums.txt -t "Release {{.VERSION}}" -n "Gossiper {{.VERSION}}"

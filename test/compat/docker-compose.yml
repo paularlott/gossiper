@@ -1,0 +1,110 @@
+# Protocol-compatibility stack: two Gossiper hubs and the FrankenPHP built-in Mercure hub as the reference.
+#
+#   docker compose -f test/compat/docker-compose.yml up -d --build
+#   go test -tags compat -count=1 -v ./test/compat/
+#   docker compose -f test/compat/docker-compose.yml down -v
+#
+# Host ports: 13000 gossiper, 13001 gossiper (--modern-subscription-format), 13002 PHP app using Gossiper,
+# 13003 FrankenPHP with the built-in hub in 0.x-compatibility mode (hub + the same PHP app, the legacy reference),
+# 13004 Gossiper --protocol modern, 13005 FrankenPHP with the built-in hub in its default Mercure 1.0 mode (the
+# modern reference, with the PHP app), 13006 PHP app using the --protocol modern Gossiper.
+name: gossiper-compat
+
+x-secret: &secret "compat-secret-compat-secret-0123456789"
+
+services:
+  gossiper:
+    build:
+      context: ../..
+      dockerfile: test/compat/Dockerfile
+    image: gossiper-compat:latest
+    command:
+      - serve
+      - --listen=:3000
+      - --publisher-key=compat-secret-compat-secret-0123456789
+      - --anonymous
+      - --subscriptions
+      - --cors-origins=http://example.com
+      - --publish-origins=http://example.com
+      - --log-level=debug
+    ports: ["13000:3000"]
+
+  gossiper-modern:
+    image: gossiper-compat:latest
+    depends_on: [gossiper]
+    command:
+      - serve
+      - --listen=:3000
+      - --publisher-key=compat-secret-compat-secret-0123456789
+      - --anonymous
+      - --subscriptions
+      - --modern-subscription-format
+      - --cors-origins=http://example.com
+      - --publish-origins=http://example.com
+      - --log-level=debug
+    ports: ["13001:3000"]
+
+  # FrankenPHP without its hub; the app publishes to Gossiper.
+  app:
+    build: ./php
+    image: gossiper-compat-php:latest
+    depends_on: [gossiper]
+    environment:
+      MERCURE_URL: http://gossiper:3000/.well-known/mercure
+      MERCURE_PUBLIC_URL: http://localhost:13000/.well-known/mercure
+      MERCURE_JWT_SECRET: *secret
+    volumes:
+      - ./caddy/Caddyfile.app:/etc/frankenphp/Caddyfile:ro
+    ports: ["13002:80"]
+
+  # FrankenPHP with the built-in hub: the reference. The same PHP app runs here against its own hub.
+  reference:
+    image: gossiper-compat-php:latest
+    depends_on: [app]
+    environment:
+      MERCURE_URL: http://localhost/.well-known/mercure
+      MERCURE_PUBLIC_URL: http://localhost:13003/.well-known/mercure
+      MERCURE_JWT_SECRET: *secret
+    volumes:
+      - ./caddy/Caddyfile.reference:/etc/frankenphp/Caddyfile:ro
+    ports: ["13003:80"]
+
+  # Gossiper accepting only Mercure 1.0.
+  gossiper-v1:
+    image: gossiper-compat:latest
+    depends_on: [gossiper]
+    command:
+      - serve
+      - --listen=:3000
+      - --protocol=modern
+      - --publisher-key=compat-secret-compat-secret-0123456789
+      - --anonymous
+      - --subscriptions
+      - --cors-origins=http://example.com
+      - --publish-origins=http://example.com
+      - --log-level=debug
+    ports: ["13004:3000"]
+
+  # The PHP app (symfony/mercure 0.9 under /v1) publishing to the Mercure-1.0-only Gossiper.
+  app-v1:
+    image: gossiper-compat-php:latest
+    depends_on: [app, gossiper-v1]
+    environment:
+      MERCURE_URL: http://gossiper-v1:3000/.well-known/mercure
+      MERCURE_PUBLIC_URL: http://localhost:13004/.well-known/mercure
+      MERCURE_JWT_SECRET: *secret
+    volumes:
+      - ./caddy/Caddyfile.app:/etc/frankenphp/Caddyfile:ro
+    ports: ["13006:80"]
+
+  # FrankenPHP with the built-in hub in its default (Mercure 1.0) mode: the modern reference.
+  reference-modern:
+    image: gossiper-compat-php:latest
+    depends_on: [app]
+    environment:
+      MERCURE_URL: http://localhost/.well-known/mercure
+      MERCURE_PUBLIC_URL: http://localhost:13005/.well-known/mercure
+      MERCURE_JWT_SECRET: *secret
+    volumes:
+      - ./caddy/Caddyfile.reference-modern:/etc/frankenphp/Caddyfile:ro
+    ports: ["13005:80"]

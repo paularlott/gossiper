@@ -1,0 +1,13 @@
+{
+    "name": "gossiper/compat-app",
+    "description": "Test app for the Gossiper protocol-compatibility suite",
+    "type": "project",
+    "require": {
+        "php": ">=8.2",
+        "lcobucci/jwt": "^5.0",
+        "symfony/http-client": "^7.0",
+        "symfony/http-foundation": "^7.0",
+        "symfony/mercure": "^0.7"
+    },
+    "config": { "sort-packages": true }
+}

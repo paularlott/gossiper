@@ -1,0 +1,23 @@
+# FrankenPHP with the built-in Mercure hub in its default (Mercure 1.0) mode: the modern reference.
+{
+	auto_https off
+	frankenphp
+}
+:80 {
+	mercure {
+		issuer https://localhost {
+			publisher {
+				jwt {env.MERCURE_JWT_SECRET}
+			}
+			subscriber {
+				jwt {env.MERCURE_JWT_SECRET}
+			}
+		}
+		anonymous
+		subscriptions
+		cors_origins http://example.com
+		publish_origins http://example.com
+	}
+	root * /app/public
+	php_server
+}

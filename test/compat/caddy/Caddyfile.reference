@@ -1,0 +1,18 @@
+# FrankenPHP WITH the built-in Mercure hub: the reference implementation.
+{
+	auto_https off
+	frankenphp
+}
+:80 {
+	mercure {
+		publisher_jwt {env.MERCURE_JWT_SECRET}
+		subscriber_jwt {env.MERCURE_JWT_SECRET}
+		protocol_version_compatibility 8
+		anonymous
+		subscriptions
+		cors_origins http://example.com
+		publish_origins http://example.com
+	}
+	root * /app/public
+	php_server
+}

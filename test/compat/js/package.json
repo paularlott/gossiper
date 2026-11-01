@@ -1,0 +1,8 @@
+{
+  "name": "gossiper-compat-js",
+  "private": true,
+  "type": "module",
+  "description": "Browser-style (EventSource) checks of the Gossiper compatibility suite",
+  "scripts": { "test": "node --test check.mjs" },
+  "dependencies": { "eventsource": "^3.0.0" }
+}

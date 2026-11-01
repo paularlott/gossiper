@@ -1,0 +1,34 @@
+.DS_Store
+/.env*
+!/.env.example
+/.task
+
+# build output: Taskfile builds into bin/
+/bin/*
+!/bin/.gitignore
+/gossiper
+/bench
+/.claude/
+/gossiper.exe
+/cmd/gossiper/gossiper
+*.test
+*.out
+*.prof
+coverage.*
+/dist
+# the web build (task webassets): the binary embeds it; only the placeholder is kept
+/web/dist/*
+!/web/dist/.gitkeep
+
+# local runtime state
+/data
+*.db
+*.db-wal
+*.db-shm
+/gossiper.toml
+/THIRD_PARTY_LICENSES.txt
+
+# test suite outputs and installed dependencies (each suite also has its own .gitignore)
+node_modules/
+__pycache__/
+/test/compat/last-run-differences.txt

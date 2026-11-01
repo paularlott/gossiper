@@ -1,0 +1,7 @@
+.git
+bin
+test/compat
+**/*_test.go
+**/node_modules
+web/dist
+*.db

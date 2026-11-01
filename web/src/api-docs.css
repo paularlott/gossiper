@@ -1,0 +1,24 @@
+/* Gossiper skin for the API reference (/api-docs/): Redoc 3 themes through CSS variables. Redoc injects its own
+   :root and :root.dark rules at run time, after this file, so these use html:root to win on specificity. */
+
+html:root {
+  --font-family-base: ui-sans-serif, system-ui, -apple-system, "Segoe UI Variable Text", "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  --font-family-monospaced: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+/* No "API docs by Redocly" badge: its link leads off the network. */
+span:has(> a[href^="https://redocly.com/redoc"]) {
+  display: none;
+}
+
+/* Each page's Copy button stays; its menu does not: besides copying, it offers to send the page to outside
+   services. */
+[data-testid="page-actions"] [data-testid="dropdown"] {
+  display: none;
+}
+html:root [data-testid="page-actions"] [data-component-name="Button/ButtonGroup"] > .button {
+  border-radius: var(--button-border-radius);
+  border-right-style: solid;
+  border-right-width: 1px;
+}

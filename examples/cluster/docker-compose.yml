@@ -1,0 +1,56 @@
+# Three gossiper nodes in one gossip cluster serving Mercure (HTTP/SSE), with Caddy in front of them.
+#
+#   GOSSIPER_PUBLISHER_KEY=$(go run ./cmd/gossiper genkey) \
+#   GOSSIPER_CLUSTER_KEY=$(go run ./cmd/gossiper genkey) \
+#     docker compose -f examples/cluster/docker-compose.yml up --build
+#
+# The hub is at http://localhost:8080/.well-known/mercure behind Caddy. Publish to it and subscribe to it; a
+# subscriber on any node receives what is published on any other. A stream that ends (a node stops) reconnects
+# through Caddy to a live node with Last-Event-ID and gets what it missed from that node's history.
+#
+# Try a failure: `docker compose -f examples/cluster/docker-compose.yml stop node2` (graceful: its Mercure streams
+# end and reconnect) or `kill node2` (abrupt), then `start node2`.
+#
+# The host port can be changed with GOSSIPER_HTTP_PORT.
+name: gossiper-cluster
+
+x-node: &node
+  build:
+    context: ../..
+  restart: unless-stopped
+  # The HTTP drain fits in this.
+  stop_grace_period: 20s
+  environment: &env
+    GOSSIPER_PUBLISHER_KEY: ${GOSSIPER_PUBLISHER_KEY:?set GOSSIPER_PUBLISHER_KEY}
+    GOSSIPER_CLUSTER_KEY: ${GOSSIPER_CLUSTER_KEY:?set GOSSIPER_CLUSTER_KEY}
+    GOSSIPER_ANONYMOUS: "true"
+    GOSSIPER_SUBSCRIPTIONS: "true"
+    GOSSIPER_METRICS: "true"
+    # The hub's public URL: Mercure 1.0 tokens are bound to it (and relative topics resolve against it).
+    GOSSIPER_HUB_URL: "http://localhost:${GOSSIPER_HTTP_PORT:-8080}/.well-known/mercure"
+    GOSSIPER_CLUSTER_BIND: "0.0.0.0:7946"
+    GOSSIPER_CLUSTER_PEERS: "node1:7946,node2:7946,node3:7946"
+
+services:
+  node1:
+    <<: *node
+    environment:
+      <<: *env
+      GOSSIPER_CLUSTER_ADVERTISE: "node1:7946"
+  node2:
+    <<: *node
+    environment:
+      <<: *env
+      GOSSIPER_CLUSTER_ADVERTISE: "node2:7946"
+  node3:
+    <<: *node
+    environment:
+      <<: *env
+      GOSSIPER_CLUSTER_ADVERTISE: "node3:7946"
+  lb:
+    image: caddy:2-alpine
+    ports:
+      - "${GOSSIPER_HTTP_PORT:-8080}:8080"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on: [node1, node2, node3]
