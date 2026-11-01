@@ -5,6 +5,7 @@ package server
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"net/http/pprof"
 	"net/netip"
 	"net/url"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -49,6 +51,7 @@ type Settings struct {
 	HubURL           string
 	CookieAccessName string
 	InsecureKeyURLs  bool
+	KeyURLsCAFile    string // PEM certificates trusted for key and discovery URLs, as well as the system's
 	TrustForwarded   bool
 	MaxLifetime      string
 
@@ -97,12 +100,39 @@ type Settings struct {
 	TenantsFile string
 	Database    string
 	APIToken    string
+	// The admin API also takes (or takes instead) the access tokens of an identity provider: AdminIssuer trusts
+	// its issuer (keys by discovery), for tokens of AdminAudience; what they allow is in authorization details of
+	// AdminDetailType (default urn:gossiper:admin), or AdminScope gives full access.
+	AdminIssuer     string
+	AdminAudience   string
+	AdminDetailType string
+	AdminScope      string
 
 	Pprof bool
 }
 
 // maxPacketAge is how far from this node's clock a cluster packet may be stamped.
 const maxPacketAge = time.Minute
+
+// loadCAs returns the system's certificate authorities and the PEM certificates of path ("": nil, the system's
+// alone).
+func loadCAs(path string) (*x509.CertPool, error) {
+	if path == "" {
+		return nil, nil
+	}
+	pem, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	pool, err := x509.SystemCertPool()
+	if err != nil {
+		pool = x509.NewCertPool()
+	}
+	if !pool.AppendCertsFromPEM(pem) {
+		return nil, fmt.Errorf("%s: no PEM certificate", path)
+	}
+	return pool, nil
+}
 
 // Defaults returns the default settings.
 func Defaults() Settings {
@@ -146,6 +176,7 @@ type Server struct {
 	log          logger.Logger
 	gossip       *gossip.Cluster
 	histDB       *historydb.Store
+	adminIdP     *adminIdP  // the admin API's identity provider, or nil
 	repl         replicator // the cluster transport, when clustered
 	shutdown     time.Duration
 	shutdownWait time.Duration // ShutdownDelay
@@ -186,6 +217,10 @@ func New(s Settings, log logger.Logger) (*Server, error) {
 	for _, as := range splitList(s.AuthServers) { // OAuth authorization servers: their keys come from discovery
 		issuers = append(issuers, auth.Issuer{Issuer: as, Discover: true})
 	}
+	keyCAs, err := loadCAs(s.KeyURLsCAFile)
+	if err != nil {
+		return nil, fmt.Errorf("key urls ca file: %w", err)
+	}
 	cfg := gossiper.Config{
 		Protocol:                  protocol,
 		TrustedIssuers:            splitList(s.TrustedIssuers),
@@ -194,6 +229,7 @@ func New(s Settings, log logger.Logger) (*Server, error) {
 		HubURL:                    s.HubURL,
 		AccessTokenCookieName:     s.CookieAccessName,
 		AllowInsecureKeyURLs:      s.InsecureKeyURLs,
+		KeyURLsCAs:                keyCAs,
 		TrustForwardedProto:       s.TrustForwarded,
 		PublisherKey:              auth.KeyConfig{Key: s.PublisherKey, Algorithm: s.PublisherAlg, JWKSURL: s.PublisherJWKS},
 		SubscriberKey:             auth.KeyConfig{Key: s.SubscriberKey, Algorithm: s.SubscriberAlg, JWKSURL: s.SubscriberJWKS},
@@ -289,8 +325,14 @@ func New(s Settings, log logger.Logger) (*Server, error) {
 			}
 		}
 	}
-	if s.APIToken != "" && s.Database == "" {
-		return nil, errors.New("api token: the admin API needs a database (set database)")
+	if (s.APIToken != "" || s.AdminIssuer != "") && s.Database == "" {
+		return nil, errors.New("admin API: it needs a database (set database)")
+	}
+	if s.AdminIssuer != "" && s.AdminAudience == "" {
+		return nil, errors.New("admin issuer: set admin-audience, the admin API's identifier in the identity provider")
+	}
+	if (s.AdminAudience != "" || s.AdminDetailType != "" || s.AdminScope != "") && s.AdminIssuer == "" {
+		return nil, errors.New("admin audience, detail type and scope: they need admin-issuer")
 	}
 	srv := &Server{settings: s, log: log, shutdown: shutdown, shutdownWait: shutdownWait, proxies: proxies,
 		mercureApplied: map[string]tenantSpec{}, reported: map[string]bool{}}
@@ -313,7 +355,21 @@ func New(s Settings, log logger.Logger) (*Server, error) {
 		}
 		cfg.HistoryStore = srv.histDB
 	}
+	if s.InsecureKeyURLs {
+		log.Warn("allow-insecure-key-urls: key and discovery URLs may use plain HTTP or a certificate that does not verify; development only")
+	}
+	if s.AdminIssuer != "" {
+		if srv.adminIdP, err = newAdminIdP(s.AdminIssuer, s.AdminAudience, s.AdminDetailType, s.AdminScope, s.InsecureKeyURLs, cfg.KeyURLsCAs); err != nil {
+			if srv.histDB != nil {
+				_ = srv.histDB.Close()
+			}
+			return nil, fmt.Errorf("admin issuer: %w", err)
+		}
+	}
 	cleanup := func() {
+		if srv.adminIdP != nil {
+			srv.adminIdP.close()
+		}
 		if srv.store != nil {
 			_ = srv.store.Close()
 		}
@@ -476,7 +532,7 @@ func (s *Server) routes() (http.Handler, http.Handler) {
 		admin = http.NewServeMux()
 		s.healthRoutes(admin)
 	}
-	if s.store != nil && s.settings.APIToken != "" {
+	if s.store != nil && (s.settings.APIToken != "" || s.adminIdP != nil) {
 		admin.HandleFunc("GET /api-docs", func(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/api-docs/", http.StatusMovedPermanently)
 		})
@@ -690,6 +746,9 @@ func (s *Server) Close(ctx context.Context) {
 		if err := s.histDB.Close(); err != nil {
 			s.log.Warn("history database did not close cleanly", "error", err.Error())
 		}
+	}
+	if s.adminIdP != nil {
+		s.adminIdP.close()
 	}
 	if s.gossip != nil {
 		s.gossip.Leave()

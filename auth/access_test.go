@@ -28,6 +28,7 @@ func TestAccessHappyPath(t *testing.T) {
 			Actions: []string{"subscribe"},
 			Topics:  []TopicMatcher{{Match: "https://example.com/a", MatchType: "exact"}},
 		}},
+		RawDetails: json.RawMessage(`[{"actions":["subscribe"],"topics":[{"match":"https://example.com/a"}],"type":"https://mercure.rocks/authorization-detail"}]`),
 	}
 	if !reflect.DeepEqual(c, want) {
 		t.Fatalf("claims\n got %+v\nwant %+v", c, want)
@@ -634,4 +635,16 @@ func TestAccessExplicitHMACMakesPEMASecret(t *testing.T) {
 	k := testKey{alg: "HS256", method: jwt.SigningMethodHS256, priv: []byte(es.pem)}
 	atOK(t, v, atMint(t, k, atClaims(clock, atIss, nil), nil))
 	atInvalid(t, v, atMint(t, es, atClaims(clock, atIss, nil), nil))
+}
+
+// An API that is not a hub skips the Mercure details (a malformed one does not refuse the token) and reads its own
+// from RawDetails, with the scope.
+func TestAccessSkipMercureDetails(t *testing.T) {
+	v, clock, k := atStatic(t, func(c *AccessConfig) { c.SkipMercureDetails = true })
+	raw := []any{map[string]any{"type": DetailType, "actions": []string{"publish"}}, // no topics: a hub would refuse it
+		map[string]any{"type": "urn:example:admin", "actions": []string{"read"}}}
+	c := atOK(t, v, atMint(t, k, atClaims(clock, atIss, map[string]any{"authorization_details": raw, "scope": "openid admin"}), nil))
+	if c.Details != nil || c.Scope != "openid admin" || !strings.Contains(string(c.RawDetails), "urn:example:admin") {
+		t.Fatalf("details %v, scope %q, raw %s", c.Details, c.Scope, c.RawDetails)
+	}
 }

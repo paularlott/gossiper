@@ -27,6 +27,10 @@ type AccessClaims struct {
 	IssuedAt time.Time // zero when absent
 	Expiry   time.Time // always set
 	Details  []Detail  // Mercure authorization details only, in token order
+	// Scope is the "scope" claim (space-separated); RawDetails the whole authorization_details claim, details of
+	// every type, for an API that defines its own (nil when absent).
+	Scope      string
+	RawDetails json.RawMessage
 }
 
 // Issuer is a trusted token issuer. Exactly one of Key, JWKSURL and Discover
@@ -64,8 +68,9 @@ type AccessConfig struct {
 	// HTTPClient fetches metadata and JWK Sets. Default: a client with a 10s
 	// timeout. Redirects off https are refused.
 	HTTPClient *http.Client
-	// AllowInsecureHTTP permits http:// JWKS and issuer URLs (for tests and
-	// closed networks). Otherwise they are refused as an SSRF/MITM hazard.
+	// AllowInsecureHTTP permits http:// JWKS and issuer URLs, and https ones whose certificate does not verify (a
+	// self-signed one), with the default HTTPClient: for tests and development. Otherwise they are refused as an
+	// SSRF/MITM hazard.
 	AllowInsecureHTTP bool
 	// MatcherTypes are the supported match_type values. Default exact, urlpattern.
 	MatcherTypes []string
@@ -78,6 +83,9 @@ type AccessConfig struct {
 	// MaxTokenSize is the longest token, in bytes, that is parsed. Default
 	// [MaxTokenSize].
 	MaxTokenSize int
+	// SkipMercureDetails leaves the Mercure authorization details unread (AccessClaims.Details stays empty), for an
+	// API that is not a hub and reads its own type from AccessClaims.RawDetails.
+	SkipMercureDetails bool
 }
 
 // defaultAccessAlgs is the default allowlist.
@@ -104,6 +112,7 @@ type AccessVerifier struct {
 	maxToken int
 	parser   *jwt.Parser
 	details  detailParser
+	skip     bool // SkipMercureDetails
 	now      func() time.Time
 }
 
@@ -130,6 +139,7 @@ func newAccessVerifier(cfg AccessConfig, o internalOpts) (*AccessVerifier, error
 		issuers:  make(map[string]*accessIssuer, len(cfg.Issuers)),
 		audience: cfg.Audience,
 		leeway:   cfg.Leeway,
+		skip:     cfg.SkipMercureDetails,
 		maxToken: orDefault(cfg.MaxTokenSize, MaxTokenSize),
 		now:      o.now,
 		details: detailParser{
@@ -503,8 +513,16 @@ func (v *AccessVerifier) claims(tc *accessTokenClaims, aud string) (*AccessClaim
 		return nil, fail(ErrInvalid, "audience does not include this resource")
 	}
 
-	if out.Details, err = v.details.parse(tc.m["authorization_details"]); err != nil {
+	if !v.skip {
+		if out.Details, err = v.details.parse(tc.m["authorization_details"]); err != nil {
+			return bad(err)
+		}
+	}
+	if out.Scope, err = tc.str("scope"); err != nil {
 		return bad(err)
+	}
+	if raw := tc.m["authorization_details"]; present(raw) {
+		out.RawDetails = raw
 	}
 	return out, nil
 }

@@ -145,7 +145,7 @@ Every node of a cluster needs the same tenants. Updates carry their tenant acros
 
 ### Admin API
 
-With a database (`--database`, an SQLite file) and an API token (`--api-token`, plain or a bcrypt hash), tenants are added, changed and removed at runtime:
+With a database (`--database`, an SQLite file) and an API token (`--api-token`, plain or a bcrypt hash), an identity provider, or both, tenants are added, changed and removed at runtime:
 
 ```bash
 gossiper serve --database /data/tenants.db --api-token "$ADMIN_TOKEN" ...
@@ -157,6 +157,22 @@ curl -H "Authorization: Bearer $ADMIN_TOKEN" -X DELETE https://events.example/ap
 ```
 
 The OpenAPI document is at `/api/openapi.json` and its reference at `/api-docs/`, both built into the binary (no request leaves the page).
+
+**Signing in with an identity provider.** Instead of (or as well as) the static token, the API takes OAuth access tokens (RFC 9068) of an identity provider: people sign in there, with its second factors, and leaving the organization ends their access.
+
+```bash
+gossiper serve --database /data/tenants.db --admin-issuer https://idp.example/o/ops \
+  --admin-audience https://events.example/api   # the API as a resource in the IdP: the tokens' aud
+```
+
+A token says what it may do in authorization details (RFC 9396) of type `urn:gossiper:admin` (`--admin-detail-type`):
+
+```json
+[{"type": "urn:gossiper:admin", "actions": ["read"]},
+ {"type": "urn:gossiper:admin", "actions": ["write"], "tenants": ["acme"]}]
+```
+
+`write` implies `read`; a detail without `tenants` covers every tenant. Each detail is a rule of its own, so this token reads every tenant and changes only `acme`; a tenant it may not read is left out of the list. A valid token that allows nothing is answered 403. For an identity provider without authorization details, `--admin-scope gossiper:admin` gives a token with that scope full access. The static token keeps full access, so it can stay as a break-glass credential, or be left out.
 
 - **Every node applies a change at once.** Each node's database replicates over the cluster's gossip network; a node that was down catches up when it returns. Give every node a database. Concurrent changes to one tenant settle on the later; deletions are remembered.
 - **Live.** A new tenant's hub is ready within milliseconds. Changing a tenant's keys restarts its hub (subscribers reconnect with `Last-Event-ID`); changing only its hosts keeps streams open.
@@ -265,8 +281,11 @@ Every setting is a flag, a `GOSSIPER_*` environment variable or a key in `gossip
 | `--history-budget` | 1 GiB | the tenants' histories together |
 | `--history-db` | | SQLite file to keep the history in across restarts |
 | `--cluster-bind`, `--cluster-peers`, `--cluster-key` | | clustering (`--cluster-insecure` to cluster without a key) |
-| `--tenants-file`, `--database`, `--api-token` | | tenants; the admin API |
-| `--allow-weak-keys`, `--allow-insecure-key-urls` | off | accept short HMAC secrets; plain-HTTP key URLs |
+| `--tenants-file`, `--database`, `--api-token` | | tenants; the admin API and its static token |
+| `--admin-issuer`, `--admin-audience` | | an identity provider whose access tokens the admin API takes; the API's identifier (the tokens' `aud`) |
+| `--admin-detail-type`, `--admin-scope` | `urn:gossiper:admin`, none | what an IdP token may do: its authorization details of this type, or this scope for full access |
+| `--allow-weak-keys`, `--allow-insecure-key-urls` | off | accept short HMAC secrets; key and discovery URLs over plain HTTP or with a certificate that does not verify (development only) |
+| `--key-urls-ca-file` | | PEM certificates trusted for key and discovery URLs, as well as the system's: an identity provider with a private CA, or a self-signed certificate |
 | `--shutdown-delay` | `0s` | on shutdown, report not ready (`/readyz` 503) and keep serving this long first: a few seconds behind a load balancer |
 | `--metrics`, `--pprof`, `--log-level` | off, off, `info` | `--pprof` needs `--admin-listen` |
 

@@ -75,7 +75,8 @@ type KeyConfig struct {
 	HTTPClient *http.Client
 	// Leeway is the clock skew tolerated when checking exp and nbf. Default 0.
 	Leeway time.Duration
-	// AllowInsecureHTTP lets JWKSURL use plain HTTP (for tests and private networks): over HTTP anyone on the path
+	// AllowInsecureHTTP lets JWKSURL use plain HTTP, or https with a certificate that does not verify (with the default
+	// HTTPClient), for tests and development: over HTTP anyone on the path
 	// can substitute keys. Default: https only.
 	AllowInsecureHTTP bool
 }

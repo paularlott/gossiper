@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,12 +36,25 @@ func checkURL(raw string, allowHTTP bool) (*url.URL, error) {
 
 // secureClient returns a copy of base (or a default client) whose redirects
 // are refused unless they stay on https (or http when allowHTTP).
+// KeyURLClient returns an HTTP client for JWK Set and discovery URLs that trusts cas as well as the system's
+// certificate authorities (and, with insecure, any certificate).
+func KeyURLClient(cas *x509.CertPool, insecure bool) *http.Client {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.TLSClientConfig = &tls.Config{RootCAs: cas, InsecureSkipVerify: insecure} //nolint:gosec // insecure only when asked
+	return &http.Client{Timeout: defaultHTTPTimeout, Transport: tr}
+}
+
 func secureClient(base *http.Client, allowHTTP bool) *http.Client {
 	var c http.Client
 	if base != nil {
 		c = *base
 	} else {
 		c.Timeout = defaultHTTPTimeout
+		if allowHTTP { // insecure: a self-signed certificate is taken too (a development identity provider)
+			tr := http.DefaultTransport.(*http.Transport).Clone()
+			tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // asked for, and only then
+			c.Transport = tr
+		}
 	}
 	prev := c.CheckRedirect
 	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {

@@ -45,6 +45,7 @@ paths:
                     type: array
                     items: {$ref: "#/components/schemas/Tenant"}
         "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
         "429": {$ref: "#/components/responses/TooManyRequests"}
     post:
       tags: [Tenants]
@@ -68,6 +69,7 @@ paths:
               schema: {$ref: "#/components/schemas/Tenant"}
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
         "409": {$ref: "#/components/responses/Conflict"}
         "429": {$ref: "#/components/responses/TooManyRequests"}
   /api/tenants/{tenant}:
@@ -84,6 +86,7 @@ paths:
             application/json:
               schema: {$ref: "#/components/schemas/Tenant"}
         "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
         "429": {$ref: "#/components/responses/TooManyRequests"}
     put:
@@ -112,6 +115,7 @@ paths:
               schema: {$ref: "#/components/schemas/Tenant"}
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
         "409": {$ref: "#/components/responses/Conflict"}
         "429": {$ref: "#/components/responses/TooManyRequests"}
     delete:
@@ -123,6 +127,7 @@ paths:
         "204":
           description: Deleted
         "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
         "409": {$ref: "#/components/responses/Conflict"}
         "429": {$ref: "#/components/responses/TooManyRequests"}
@@ -138,6 +143,7 @@ paths:
             application/json:
               schema: {$ref: "#/components/schemas/Status"}
         "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
         "429": {$ref: "#/components/responses/TooManyRequests"}
   /api/openapi.json:
     get:
@@ -162,7 +168,13 @@ components:
     bearer:
       type: http
       scheme: bearer
-      description: The server's API token (`--api-token`).
+      description: >-
+        The server's API token (`--api-token`), which may do anything, or an access token of the identity provider
+        (`--admin-issuer`, for the audience `--admin-audience`). An IdP's token says what it may do in authorization
+        details (RFC 9396) of type `urn:gossiper:admin` (`--admin-detail-type`), each detail a rule of its own:
+        `{"type": "urn:gossiper:admin", "actions": ["read", "write"], "tenants": ["acme"]}`. `write` implies `read`;
+        a detail without `tenants` covers every tenant. With `--admin-scope`, a token with that scope may do
+        anything.
   parameters:
     Tenant:
       name: tenant
@@ -176,8 +188,13 @@ components:
       content:
         application/json:
           schema: {$ref: "#/components/schemas/Error"}
+    Forbidden:
+      description: The token is valid but does not allow this request (reading or writing, or this tenant)
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
     Unauthorized:
-      description: No token, or not the API token
+      description: No token, or neither the API token nor a valid token of the identity provider
       headers:
         WWW-Authenticate:
           schema: {type: string}

@@ -1,6 +1,7 @@
 package gossiper
 
 import (
+	"crypto/x509"
 	"errors"
 	"net/url"
 	"strings"
@@ -30,8 +31,12 @@ type Config struct {
 	// ResourceIdentifier is the hub's OAuth resource identifier: Mercure 1.0 tokens must name it in aud. Default:
 	// the hub URL the client contacted (scheme, host, /.well-known/mercure), as HubURL is when it is absolute.
 	ResourceIdentifier string
-	// AllowInsecureKeyURLs lets JWK Set and discovery URLs use plain HTTP (for tests and private networks).
+	// AllowInsecureKeyURLs lets JWK Set and discovery URLs use plain HTTP, or https with a certificate that does
+	// not verify (for tests and development).
 	AllowInsecureKeyURLs bool
+	// KeyURLsCAs, when set, are the certificate authorities trusted for JWK Set and discovery URLs, as well as the
+	// system's: an identity provider with a certificate of a private CA, or a self-signed one.
+	KeyURLsCAs *x509.CertPool
 	// TrustForwardedProto takes the scheme clients used from the X-Forwarded-Proto header, behind a proxy that
 	// terminates TLS and sets it; it decides the default resource identifier and the metadata URL. Default off:
 	// the header is ignored.

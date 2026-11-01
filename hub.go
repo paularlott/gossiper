@@ -172,6 +172,15 @@ func (h *Hub) newVerifiers() error {
 		subKey = pubKey
 	}
 	pubKey.AllowInsecureHTTP, subKey.AllowInsecureHTTP = cfg.AllowInsecureKeyURLs, cfg.AllowInsecureKeyURLs
+	if cfg.KeyURLsCAs != nil { // key sets and discovery fetched trusting those authorities too
+		c := auth.KeyURLClient(cfg.KeyURLsCAs, cfg.AllowInsecureKeyURLs)
+		if pubKey.HTTPClient == nil {
+			pubKey.HTTPClient = c
+		}
+		if subKey.HTTPClient == nil {
+			subKey.HTTPClient = c
+		}
+	}
 	var err error
 	if cfg.Protocol.legacy() {
 		if hasKey(pubKey) {

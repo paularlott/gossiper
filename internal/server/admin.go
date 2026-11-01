@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -77,7 +78,7 @@ var adminRouteList = []adminRoute{
 
 // adminRoutes registers the admin API on mux.
 func (s *Server) adminRoutes(mux *http.ServeMux) {
-	a := &adminAPI{s: s, token: s.settings.APIToken, limiter: newFailLimiter(60, time.Minute, maxFailEntries),
+	a := &adminAPI{s: s, token: s.settings.APIToken, idp: s.adminIdP, limiter: newFailLimiter(60, time.Minute, maxFailEntries),
 		bcrypts: make(chan struct{}, maxBcrypts)}
 	for _, rt := range adminRouteList {
 		mux.Handle(rt.method+" "+rt.path, a.auth(func(w http.ResponseWriter, r *http.Request) error {
@@ -91,7 +92,8 @@ func (s *Server) adminRoutes(mux *http.ServeMux) {
 
 type adminAPI struct {
 	s       *Server
-	token   string
+	token   string    // the static token ("" for none)
+	idp     *adminIdP // or nil
 	limiter *failLimiter
 	good    atomic.Pointer[[sha256.Size]byte] // the digest of the last token a bcrypt hash accepted
 	bcrypts chan struct{}                     // the bcrypt comparisons under way
@@ -115,9 +117,25 @@ func (a *adminAPI) auth(h func(http.ResponseWriter, *http.Request) error) http.H
 			return
 		}
 		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		token = strings.TrimSpace(token)
+		var g grant
 		var err error
 		if ok {
-			ok, err = a.valid(strings.TrimSpace(token))
+			ok = false
+			// An IdP's token (a JWT) is verified by it; the static token is compared (with bcrypt for a hash).
+			if a.idp != nil && looksLikeJWT(token) {
+				g, err = a.idp.grant(r.Context(), token)
+				if errors.Is(err, errNoAdminRights) {
+					writeJSON(w, http.StatusForbidden, apiError{err.Error()})
+					return
+				}
+				ok, err = err == nil, nil
+			}
+			if !ok && a.token != "" {
+				if ok, err = a.valid(token); ok {
+					g = fullGrant
+				}
+			}
 		}
 		if err != nil {
 			w.Header().Set("Retry-After", "1")
@@ -130,6 +148,15 @@ func (a *adminAPI) auth(h func(http.ResponseWriter, *http.Request) error) http.H
 			writeJSON(w, http.StatusUnauthorized, apiError{"a valid API token is required"})
 			return
 		}
+		if !g.may(r.Method != http.MethodGet) {
+			writeJSON(w, http.StatusForbidden, apiError{"the token does not allow this"})
+			return
+		}
+		if name := r.PathValue("tenant"); name != "" && !g.allows(r.Method != http.MethodGet, name) {
+			writeJSON(w, http.StatusForbidden, apiError{"the token does not allow this tenant"})
+			return
+		}
+		r = r.WithContext(context.WithValue(r.Context(), grantKey{}, g))
 		r.Body = http.MaxBytesReader(w, r.Body, maxAPIBody)
 		if err := h(w, r); err != nil {
 			writeErr(w, err)
@@ -352,8 +379,9 @@ func (a *adminAPI) tenant(name string) (tenantView, bool) {
 	return tenantView{}, false
 }
 
-func (a *adminAPI) listTenants(w http.ResponseWriter, _ *http.Request) error {
-	out := a.tenants()
+func (a *adminAPI) listTenants(w http.ResponseWriter, r *http.Request) error {
+	g := grantOf(r)
+	out := slices.DeleteFunc(a.tenants(), func(t tenantView) bool { return !g.allows(false, t.Name) })
 	if out == nil {
 		out = []tenantView{}
 	}
@@ -391,6 +419,9 @@ func (a *adminAPI) createTenant(w http.ResponseWriter, r *http.Request) error {
 	var in tenantSpec
 	if err := decode(r, &in); err != nil {
 		return err
+	}
+	if !grantOf(r).allows(true, in.Name) {
+		return fail(http.StatusForbidden, "the token does not allow tenant %q", in.Name)
 	}
 	if _, err := a.writeTenant(r.Context(), in, true); err != nil {
 		return err
