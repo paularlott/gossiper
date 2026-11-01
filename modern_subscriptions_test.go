@@ -482,7 +482,7 @@ func TestSubscriptionsAPIMercure1(t *testing.T) {
 			if r.header.Get("ETag") != `"`+last+`"` {
 				t.Errorf("ETag %q", r.header.Get("ETag"))
 			}
-			if r.header.Get("Cache-Control") != "must-revalidate" {
+			if r.header.Get("Cache-Control") != "private, must-revalidate" {
 				t.Errorf("Cache-Control %q", r.header.Get("Cache-Control"))
 			}
 		}

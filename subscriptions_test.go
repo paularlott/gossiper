@@ -180,6 +180,14 @@ func TestSubscriptionsAPIAuth(t *testing.T) {
 			if got := challenge(r.header.Get("WWW-Authenticate")); got != tc.wantA {
 				t.Fatalf("WWW-Authenticate %q, want %q", got, tc.wantA)
 			}
+			if r.code == 200 || r.code == 404 { // what a token sees: kept by no shared cache, nor given to another token
+				if cc := r.header.Get("Cache-Control"); cc != "private, must-revalidate" {
+					t.Errorf("Cache-Control %q", cc)
+				}
+				if v := strings.Join(r.header.Values("Vary"), ", "); !strings.Contains(v, "Authorization") || !strings.Contains(v, "Cookie") {
+					t.Errorf("Vary %q, want Authorization and Cookie", v)
+				}
+			}
 		})
 	}
 	t.Run("query token", func(t *testing.T) {
@@ -273,7 +281,7 @@ func TestSubscriptionsAPICollection(t *testing.T) {
 	if link := r.header.Get("Link"); link != `</.well-known/mercure>; rel="mercure"` {
 		t.Fatalf("link %q", link)
 	}
-	if r.header.Get("Cache-Control") != "must-revalidate" || r.header.Get("Warning") != "" {
+	if r.header.Get("Cache-Control") != "private, must-revalidate" || r.header.Get("Warning") != "" {
 		t.Fatalf("headers %v", r.header)
 	}
 	if len(l.Subscriptions) != 3 {

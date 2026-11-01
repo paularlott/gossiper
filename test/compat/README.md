@@ -120,7 +120,6 @@ choice (draft-07 format, limits, `both` mode affordances) or leniency/strictness
 | `HEAD /subscriptions` | 405 | 200 | No |
 | `/subscriptions/a/b/c` | 400 | 404 | No |
 | Error body texts | e.g. `missing "match" subscription parameter` | `Missing "topic" parameter` | No (not machine-readable) |
-| Vary/Cache-Control on the subscriptions API | `Vary: Authorization, Cookie`, `private` | `Vary: Origin` | Only for shared caches in front of the hub |
 
 ## Differences in Mercure 1.0 mode (Gossiper vs the modern reference)
 
@@ -139,9 +138,8 @@ client.
 | Reserved namespace | `/.well-known%2Fmercure/...` and `/.well-known//mercure/...` accepted (different URLs) | 400 | No (stricter, safe) |
 | Empty `match=`, `match_exact=`, `match_urlpattern=` | opens a stream | 400 | No |
 | `last_event_id=` empty | replays from the start, `Mercure-Last-Event-ID: earliest` | treated as absent | No |
-| QUERY content negotiation | 415 for a media type other than form-urlencoded, 400 without a body | accepts any media type, also reads the query string and a text/plain body | Minor: a spec-following client is unaffected; a strict server would 415 |
+| QUERY without a `Content-Type` | 400 | 415 (both answer 415 for another media type) | No: both refuse it |
 | Origin with trailing slash on cookie publish | 400 | accepted | No |
-| `X-Forwarded-Proto` | ignored (no trusted proxy) | the resource identifier and `resource_metadata` URL use `https` | Debatable: right behind a TLS proxy, but any client can flip it; consider a trusted-proxies setting |
 | Protected-resource metadata | 5 members | plus `mercure_matcher_types_supported`; `Cache-Control: max-age=300` | No |
 | `Allow` on 405 | absent | present | No |
 | Subscriptions API edge paths | `/subscriptions/{unknown type}`: 404; `/subscriptions/{unknown type}/{m}` and the 2-segment draft-07 path: 400; HEAD 405 | 200 empty list; 404; HEAD 200 | No |

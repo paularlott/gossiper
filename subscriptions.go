@@ -155,7 +155,10 @@ func (h *Hub) serveSubscriptions(w http.ResponseWriter, r *http.Request) {
 		hd.Set("Link", "<"+h.cfg.HubURL+`>; rel="mercure"`)
 	}
 	hd.Set("ETag", entityTag(last))
-	hd.Set("Cache-Control", "must-revalidate")
+	// What a subscriber sees depends on its token: a shared cache must neither keep it nor give it to another.
+	hd.Set("Cache-Control", "private, must-revalidate")
+	hd.Add("Vary", "Authorization")
+	hd.Add("Vary", "Cookie")
 	if !complete || err != nil {
 		hd.Set("Warning", `199 - "incomplete: not every node answered"`)
 	}

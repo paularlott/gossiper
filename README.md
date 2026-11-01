@@ -61,12 +61,14 @@ With FrankenPHP, leave the `mercure` directive out of the Caddyfile and route `/
 
 ## Protocol
 
-Both revisions of Mercure, and the official [conformance suite](https://mercure.rocks/docs/ecosystem/conformance-tests) passes:
+Both revisions of Mercure:
 
 - **Mercure 1.0** ([draft-08](https://datatracker.ietf.org/doc/draft-dunglas-mercure/)): access tokens (`at+jwt`), `match` and `match_urlpattern` subscriptions, protected resource metadata.
 - **[draft-07](https://datatracker.ietf.org/doc/html/draft-dunglas-mercure-07)**: the `mercure` JWT claim and URI-template `topic` selectors, what Symfony, API Platform and FrankenPHP clients speak today.
 
 Each request is read in the revision it uses; `--protocol modern` or `--protocol legacy` accepts only one. Keys are HMAC secrets, PEM public keys or JWK Set URLs (see [Configuration](#configuration)); Mercure 1.0 tokens are checked against `--resource-identifier`.
+
+The official [conformance suite](https://mercure.rocks/docs/ecosystem/conformance-tests) passes; it covers publishing, topic matching and private updates. OAuth tokens, replay and the subscriptions API, which it does not cover, are checked by the [compatibility suite](test/compat), which runs FrankenPHP's and Symfony's clients and compares Gossiper's answers with the reference hub's, and by Gossiper's own tests.
 
 **Where Gossiper differs from the spec:**
 

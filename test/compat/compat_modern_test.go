@@ -350,7 +350,7 @@ func TestModernPublishValidation(t *testing.T) {
 
 var (
 	knEmptyMatch = kn("an empty match value opens a stream on the reference; Gossiper refuses it (400)", "status", "header:Content-Type")
-	knQueryCT    = kn("QUERY content negotiation: the reference requires application/x-www-form-urlencoded (415) and a body (400); Gossiper also reads the query string and is lenient with the media type", "status", "header:Content-Type")
+	knQueryCT    = kn("a QUERY without a Content-Type: the reference answers 400, Gossiper 415 (it checks the media type first); both refuse it, and both answer 415 for another media type", "status", "header:Content-Type")
 	knLEIDHeader = kn("the response header Last-Event-ID (draft-07 name) is sent by the default Gossiper next to Mercure-Last-Event-ID; the reference and --protocol modern send only Mercure-Last-Event-ID", "header:Last-Event-ID")
 )
 
@@ -418,8 +418,8 @@ func TestModernSubscribeRequests(t *testing.T) {
 		{name: "query-body-unknown-match-type", req: query(hubPath, "match_foo=x", form, nil)},
 		{name: "query-empty-body", req: query(hubPath, "", form, nil)},
 		{name: "query-no-body-with-query-string", known: knQueryCT, req: query(q("match", topic), "", "", nil)},
-		{name: "query-wrong-content-type", known: knQueryCT, req: query(hubPath, "match="+url.QueryEscape(topic), "text/plain", nil)},
-		{name: "query-json-content-type", known: knQueryCT, req: query(hubPath, `{"match":"x"}`, "application/json", nil)},
+		{name: "query-wrong-content-type", req: query(hubPath, "match="+url.QueryEscape(topic), "text/plain", nil)},
+		{name: "query-json-content-type", req: query(hubPath, `{"match":"x"}`, "application/json", nil)},
 		{name: "query-no-content-type", known: knQueryCT, req: query(hubPath, "match=x", "", nil)},
 		{name: "query-with-charset", req: query(hubPath, "match=x", form+"; charset=utf-8", nil)},
 		{name: "query-invalid-body-escape", req: query(hubPath, "match=%zz", form, nil)},
@@ -505,7 +505,7 @@ func TestModernCORSAndMetadata(t *testing.T) {
 		{name: "401-resource-metadata-with-host-header", known: knMalformed, req: func(hub) req {
 			return req{Path: hubPath + "?match=x", Header: hdrs("Host", "hub.example.org", "Authorization", "Bearer eyJhbGciOiJIUzI1NiJ9.e30.x")}
 		}},
-		{name: "401-resource-metadata-forwarded", known: kn("Gossiper builds the resource_metadata URL (and the expected aud) from X-Forwarded-Proto; the reference ignores forwarding headers unless the proxy is trusted", "header:WWW-Authenticate"), req: func(hub) req {
+		{name: "401-resource-metadata-forwarded", req: func(hub) req { // forwarding headers are ignored by both (Gossiper trusts them only with --trust-forwarded-proto)
 			return publishReq(pubForm(topic), "", hdrs("X-Forwarded-Proto", "https", "X-Forwarded-Host", "hub.example.org"))
 		}},
 	})
