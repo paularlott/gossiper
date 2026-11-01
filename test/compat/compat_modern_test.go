@@ -350,7 +350,6 @@ func TestModernPublishValidation(t *testing.T) {
 
 var (
 	knEmptyMatch = kn("an empty match value opens a stream on the reference; Gossiper refuses it (400)", "status", "header:Content-Type")
-	knQueryCT    = kn("a QUERY without a Content-Type: the reference answers 400, Gossiper 415 (it checks the media type first); both refuse it, and both answer 415 for another media type", "status", "header:Content-Type")
 	knLEIDHeader = kn("the response header Last-Event-ID (draft-07 name) is sent by the default Gossiper next to Mercure-Last-Event-ID; the reference and --protocol modern send only Mercure-Last-Event-ID", "header:Last-Event-ID")
 )
 
@@ -417,10 +416,10 @@ func TestModernSubscribeRequests(t *testing.T) {
 		{name: "query-body-and-query-string", req: query(q("match", topic), "match_exact="+url.QueryEscape(topic+"/2"), form, nil)},
 		{name: "query-body-unknown-match-type", req: query(hubPath, "match_foo=x", form, nil)},
 		{name: "query-empty-body", req: query(hubPath, "", form, nil)},
-		{name: "query-no-body-with-query-string", known: knQueryCT, req: query(q("match", topic), "", "", nil)},
+		{name: "query-no-body-with-query-string", req: query(q("match", topic), "", "", nil)},
 		{name: "query-wrong-content-type", req: query(hubPath, "match="+url.QueryEscape(topic), "text/plain", nil)},
 		{name: "query-json-content-type", req: query(hubPath, `{"match":"x"}`, "application/json", nil)},
-		{name: "query-no-content-type", known: knQueryCT, req: query(hubPath, "match=x", "", nil)},
+		{name: "query-no-content-type", req: query(hubPath, "match=x", "", nil)},
 		{name: "query-with-charset", req: query(hubPath, "match=x", form+"; charset=utf-8", nil)},
 		{name: "query-invalid-body-escape", req: query(hubPath, "match=%zz", form, nil)},
 		{name: "query-with-token", req: func(h hub) req { return query(hubPath, "match="+url.QueryEscape(topic), form, authz(subTok(h)))(h) }},
@@ -465,7 +464,7 @@ func TestModernSubscribeRequests(t *testing.T) {
 		{name: "lastEventID-query-legacy-name", known: kn("the draft-07 query name lastEventID is ignored by the reference; Gossiper honours it", "header:Last-Event-ID", "header:Mercure-Last-Event-ID"), req: get(q("match", topic, "lastEventID", "earliest"), nil)},
 		{name: "last_event_id-empty", known: kn("an empty last_event_id= parameter: the reference replays from the start and says so (Mercure-Last-Event-ID: earliest); Gossiper treats it as absent", "header:Mercure-Last-Event-ID", "header:Last-Event-ID"), req: get(q("match", topic, "last_event_id", ""), nil)},
 		{name: "unknown-path", req: get("/.well-known/mercure/x?match=a", nil)},
-		{name: "accept-json", known: kn("the reference answers 406 when Accept excludes text/event-stream; Gossiper streams regardless", "status", "header:Content-Type"), req: get(q("match", topic), hdrs("Accept", "application/json"))},
+		{name: "accept-json", req: get(q("match", topic), hdrs("Accept", "application/json"))},
 	})
 }
 

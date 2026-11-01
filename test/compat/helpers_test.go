@@ -245,7 +245,7 @@ type known map[string]string
 
 // globalKnown are differences that hold on every response.
 var globalKnown = known{
-	"header:Access-Control-Expose-Headers": "Gossiper exposes \"Link, Last-Event-ID, Mercure-Last-Event-ID\"; the reference exposes \"Accept-Query, Link, Mercure-Last-Event-ID\". Browsers read Last-Event-ID from the response of a replayed stream only if exposed; nothing in the Mercure client flow depends on Accept-Query.",
+	"header:Access-Control-Expose-Headers": "Gossiper also exposes \"Last-Event-ID\" (the draft-07 response cursor) beside the reference's \"Accept-Query, Link, Mercure-Last-Event-ID\": browsers read it from a replayed stream's response only if exposed.",
 }
 
 func (k known) reason(field string) (string, bool) {

@@ -111,15 +111,21 @@ func (s *Subscription) followSSE(ctx context.Context, onOpen func()) error {
 	idle := time.AfterFunc(sseIdle, cancel)
 	defer idle.Stop()
 	err = readSSE(&idleReader{r: resp.Body, t: idle}, func(ev Event) bool {
+		// The ID is recorded before the event is delivered, so LastEventID names it as soon as the caller has it; and
+		// put back if it cannot be, so that a reconnection does not skip it.
+		s.mu.Lock()
+		prev := s.lastID
+		if ev.ID != "" {
+			s.lastID = ev.ID
+		}
+		s.mu.Unlock()
 		select {
 		case s.events <- ev:
-			if ev.ID != "" {
-				s.mu.Lock()
-				s.lastID = ev.ID
-				s.mu.Unlock()
-			}
 			return true
 		case <-ctx.Done():
+			s.mu.Lock()
+			s.lastID = prev
+			s.mu.Unlock()
 			return false
 		}
 	})

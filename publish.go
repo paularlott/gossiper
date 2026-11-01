@@ -162,9 +162,10 @@ func (h *Hub) servePublishStream(w http.ResponseWriter, r *http.Request, g *gran
 	if rc.Flush() != nil {
 		return
 	}
-	// A closing hub, or a failing store, ends the stream at once, even one waiting for its next line.
+	// A closing hub, or a failing store, ends the stream at once, even one waiting for its next line. Not once the
+	// handler has returned: the response writer is gone then (an abort may run while it returns).
 	var dmu sync.Mutex
-	aborted := false
+	aborted, finished := false, false
 	setReadDeadline := func() {
 		dmu.Lock()
 		if !aborted {
@@ -174,11 +175,19 @@ func (h *Hub) servePublishStream(w http.ResponseWriter, r *http.Request, g *gran
 	}
 	abort := func() {
 		dmu.Lock()
+		defer dmu.Unlock()
+		if finished {
+			return
+		}
 		aborted = true
 		_ = rc.SetReadDeadline(time.Now())
-		dmu.Unlock()
 	}
 	defer context.AfterFunc(h.closingCtx, abort)()
+	defer func() { // runs first
+		dmu.Lock()
+		finished = true
+		dmu.Unlock()
+	}()
 	in := bufio.NewReaderSize(r.Body, 64<<10)
 	var out []streamAck
 	var last *Update               // the last update of out the store writes: the store writes in order

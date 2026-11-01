@@ -603,7 +603,7 @@ func TestSubscribeRequests(t *testing.T) {
 		{name: "last-event-id-query-legacy-name", known: kn("Gossiper also reads the draft-07 query parameter Last-Event-ID; the reference ignores it", "header:Last-Event-ID", "header:Mercure-Last-Event-ID"), req: get(q("Last-Event-ID", "unknown-id"), nil)},
 		{name: "last-event-id-earliest-header", req: get(q(), map[string]string{"Last-Event-ID": "earliest"})},
 		{name: "last-event-id-earliest-query", req: get(q("lastEventID", "earliest"), nil)},
-		{name: "accept-json", known: kn("the reference answers 406 when Accept excludes text/event-stream; Gossiper streams regardless", "status", "header:Content-Type"), req: get(q(), map[string]string{"Accept": "application/json"})},
+		{name: "accept-json", req: get(q(), map[string]string{"Accept": "application/json"})},
 		{name: "unknown-path", req: get("/.well-known/mercure/x?topic=a", nil)},
 		{name: "root", req: get("/", nil)},
 	})

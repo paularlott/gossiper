@@ -7,6 +7,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -148,6 +149,46 @@ func (s *subscriber) linger(loaded bool, last int) {
 // maxQueryBody bounds the form body of a QUERY subscription request.
 const maxQueryBody = 1 << 20
 
+// formMediaType is the media type a QUERY subscription's body is read in.
+const formMediaType = "application/x-www-form-urlencoded"
+
+// acceptsEventStream reports whether the Accept header values allow text/event-stream: no header at all states no
+// preference; otherwise the most specific range matching text/event-stream (the type itself, text/*, */*) decides,
+// and a q of 0 refuses it (so "text/event-stream;q=0, */*" does).
+func acceptsEventStream(values []string) bool {
+	if len(values) == 0 {
+		return true
+	}
+	best, q := -1, 0.0 // specificity of the best range found: 2 exact, 1 text/*, 0 */*
+	for _, v := range values {
+		for _, part := range strings.Split(v, ",") {
+			mt, params, err := mime.ParseMediaType(strings.TrimSpace(part))
+			if err != nil {
+				continue
+			}
+			spec := -1
+			switch mt {
+			case "text/event-stream":
+				spec = 2
+			case "text/*":
+				spec = 1
+			case "*/*":
+				spec = 0
+			}
+			if spec <= best {
+				continue
+			}
+			best, q = spec, 1
+			if qs, ok := params["q"]; ok {
+				if f, err := strconv.ParseFloat(qs, 64); err == nil {
+					q = f
+				}
+			}
+		}
+	}
+	return best >= 0 && q > 0
+}
+
 // serveSubscribe handles GET (and QUERY) /.well-known/mercure: a Server-Sent Events stream of the updates
 // matching the subscription's matchers, after the ones missed since its last event ID.
 func (h *Hub) serveSubscribe(w http.ResponseWriter, r *http.Request) {
@@ -160,9 +201,19 @@ func (h *Hub) serveSubscribe(w http.ResponseWriter, r *http.Request) {
 		h.writeAuthError(w, r, http.StatusUnauthorized, "")
 		return
 	}
+	if !acceptsEventStream(r.Header.Values("Accept")) {
+		writeError(w, http.StatusNotAcceptable, http.StatusText(http.StatusNotAcceptable))
+		return
+	}
 	var body url.Values
 	if r.Method == methodQuery {
-		if mt, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); mt != "application/x-www-form-urlencoded" {
+		w.Header().Set("Accept-Query", formMediaType) // on an error too, so the client learns what to send
+		ct := r.Header.Get("Content-Type")
+		if ct == "" {
+			writeError(w, http.StatusBadRequest, "Missing Content-Type")
+			return
+		}
+		if mt, _, _ := mime.ParseMediaType(ct); mt != formMediaType {
 			writeError(w, http.StatusUnsupportedMediaType, http.StatusText(http.StatusUnsupportedMediaType))
 			return
 		}
@@ -383,7 +434,7 @@ func (h *Hub) streamHeaders(w http.ResponseWriter, r *http.Request, cursor, at s
 	hd.Set("Pragma", "no-cache")
 	hd.Set("Expires", "0")
 	hd.Set("X-Accel-Buffering", "no")
-	hd.Set("Accept-Query", "application/x-www-form-urlencoded")
+	hd.Set("Accept-Query", formMediaType)
 	if r.ProtoMajor == 1 {
 		hd.Set("Connection", "keep-alive")
 	}

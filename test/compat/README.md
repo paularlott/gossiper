@@ -111,7 +111,6 @@ choice (draft-07 format, limits, `both` mode affordances) or leniency/strictness
 | `topic=` empty on subscribe | opens a stream | 400 | No |
 | `match=` subscription param (newer protocol) | accepted | 400 (only `topic`) | Only for clients using the newer parameter; `topic` is what Symfony/Mercure JS use |
 | `Last-Event-ID` query parameter (draft-07 name) | ignored | honoured | No (superset) |
-| `Accept: application/json` on subscribe | 406 | 200 stream | No |
 | `retry=` empty / `retry=0` on publish | empty ignored; 0 dropped | empty 400; `retry: 0` sent | Minor: `retry: 0` makes browsers reconnect with no delay; Symfony never sends it |
 | `type` longer than 256 bytes | accepted | 400 | Minor (limit) |
 | Body over 1 MiB | accepted | 413 (`--max-publish-size`) | Configurable |
@@ -138,13 +137,11 @@ client.
 | Reserved namespace | `/.well-known%2Fmercure/...` and `/.well-known//mercure/...` accepted (different URLs) | 400 | No (stricter, safe) |
 | Empty `match=`, `match_exact=`, `match_urlpattern=` | opens a stream | 400 | No |
 | `last_event_id=` empty | replays from the start, `Mercure-Last-Event-ID: earliest` | treated as absent | No |
-| QUERY without a `Content-Type` | 400 | 415 (both answer 415 for another media type) | No: both refuse it |
 | Origin with trailing slash on cookie publish | 400 | accepted | No |
 | Protected-resource metadata | 5 members | plus `mercure_matcher_types_supported`; `Cache-Control: max-age=300` | No |
 | `Allow` on 405 | absent | present | No |
 | Subscriptions API edge paths | `/subscriptions/{unknown type}`: 404; `/subscriptions/{unknown type}/{m}` and the 2-segment draft-07 path: 400; HEAD 405 | 200 empty list; 404; HEAD 200 | No |
 | CORS | preflight only for GET; plain OPTIONS 405 | grants GET/HEAD/POST/QUERY and echoes valid request headers, `Max-Age: 600`; plain OPTIONS 204 | No (superset) |
-| `Accept: application/json` on subscribe | 406 | streams | No |
 | `Access-Control-Expose-Headers` | `Accept-Query, Link, Mercure-Last-Event-ID` | adds `Last-Event-ID` (both mode) | No |
 
 `--protocol both` additionally accepts what draft-07 clients need on the same endpoint (all verified as the only

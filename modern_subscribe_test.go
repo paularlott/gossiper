@@ -716,7 +716,7 @@ func TestSubscribeQuery(t *testing.T) {
 				e.publishA(t, "end", "sentinel")
 				c.expect("end")
 			}
-			for _, ct := range []string{"", "text/plain", "application/json", "multipart/form-data; boundary=x", "application/x-www-form-urlencoded2", "x-www-form-urlencoded", ";;"} {
+			for _, ct := range []string{"text/plain", "application/json", "multipart/form-data; boundary=x", "application/x-www-form-urlencoded2", "x-www-form-urlencoded", ";;"} {
 				hdr := h.Clone()
 				hdr.Del("Content-Type")
 				if ct != "" {
@@ -727,10 +727,13 @@ func TestSubscribeQuery(t *testing.T) {
 					t.Errorf("Content-Type %q: %d, want 415", ct, r.code)
 				}
 			}
-			// Checked before the token, and with the matchers in the query component only.
-			r := e.do(t, "QUERY", e.hubURL()+"?match=a", h, "")
-			if r.code != 415 {
-				t.Errorf("QUERY without a Content-Type: %d, want 415", r.code)
+			// None at all is a bad request (the spec's 400), with a body or with the matchers in the query component only.
+			for _, body := range []string{"match=a", ""} {
+				hdr := h.Clone()
+				hdr.Del("Content-Type")
+				if r := e.do(t, "QUERY", e.hubURL()+"?match=a", hdr, body); r.code != 400 {
+					t.Errorf("QUERY without a Content-Type, body %q: %d, want 400", body, r.code)
+				}
 			}
 			// GET needs none.
 			e.openStream(t, http.MethodGet, url.Values{"match": {"a"}}, h, "")

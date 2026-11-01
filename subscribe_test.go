@@ -665,3 +665,51 @@ func TestCursorHeaderMovesBackForLateArrivals(t *testing.T) {
 		t.Fatalf("late arrival: %q, want the update before it", got)
 	}
 }
+
+// The most specific Accept range matching text/event-stream decides; no Accept header at all states no preference.
+func TestAcceptsEventStream(t *testing.T) {
+	for _, tc := range []struct {
+		accept []string
+		want   bool
+	}{
+		{nil, true},
+		{[]string{"text/event-stream"}, true},
+		{[]string{"*/*"}, true},
+		{[]string{"text/*"}, true},
+		{[]string{"application/json, text/event-stream;q=0.5"}, true},
+		{[]string{"application/json"}, false},
+		{[]string{"text/event-stream;q=0"}, false},
+		{[]string{"text/event-stream;q=0, */*"}, false}, // the exact range refuses it, whatever */* says
+		{[]string{"*/*;q=0"}, false},
+		{[]string{"text/html", "text/event-stream"}, true}, // several header lines
+	} {
+		if got := acceptsEventStream(tc.accept); got != tc.want {
+			t.Errorf("Accept %q: %v, want %v", tc.accept, got, tc.want)
+		}
+	}
+}
+
+// A subscription that excludes text/event-stream is refused with 406; a QUERY without a Content-Type with 400, one of
+// another media type with 415, both saying what to send (Accept-Query).
+func TestSubscribeNegotiation(t *testing.T) {
+	e := newEnv(t, Config{Anonymous: true})
+	q := url.Values{"topic": {"https://n.test/a"}}.Encode()
+	for _, accept := range []string{"application/json", "text/event-stream;q=0"} {
+		if r := e.do(t, http.MethodGet, e.hubURL()+"?"+q, http.Header{"Accept": {accept}}, ""); r.code != http.StatusNotAcceptable {
+			t.Errorf("Accept %q: %d, want 406", accept, r.code)
+		}
+	}
+	for _, tc := range []struct {
+		ct   string
+		want int
+	}{{"", http.StatusBadRequest}, {"text/plain", http.StatusUnsupportedMediaType}} {
+		hdr := http.Header{}
+		if tc.ct != "" {
+			hdr.Set("Content-Type", tc.ct)
+		}
+		r := e.do(t, methodQuery, e.hubURL(), hdr, q)
+		if r.code != tc.want || r.header.Get("Accept-Query") != formMediaType {
+			t.Errorf("QUERY with Content-Type %q: %d, Accept-Query %q; want %d", tc.ct, r.code, r.header.Get("Accept-Query"), tc.want)
+		}
+	}
+}
