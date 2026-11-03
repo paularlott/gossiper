@@ -879,3 +879,55 @@ func TestTLSOptions(t *testing.T) {
 		}
 	}
 }
+
+// A hub answering with a redirect is not followed: the token goes to the hub's URL only. The target here is another
+// port of the same host, where Go would send the Authorization header on; also with a caller's HTTP client.
+func TestRedirectsNotFollowed(t *testing.T) {
+	var reached atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached.Add(1)
+		t.Errorf("redirect followed: %s %s, Authorization %q", r.Method, r.URL, r.Header.Get("Authorization"))
+	}))
+	defer target.Close()
+	var asked atomic.Int32
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked.Add(1)
+		http.Redirect(w, r, target.URL+"/collect", http.StatusTemporaryRedirect)
+	}))
+	defer hub.Close()
+
+	for _, tc := range []struct {
+		name string
+		opts Options
+	}{
+		{"post", Options{Transport: HTTP}},
+		{"stream", Options{Transport: Stream}},
+		{"caller's client", Options{Transport: HTTP, HTTPClient: &http.Client{}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			o := tc.opts
+			o.URL, o.Token = hub.URL+"/.well-known/mercure", "SECRET-TOKEN"
+			c, err := New(o)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			pctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			if _, err := c.Publish(pctx, Update{Topics: []string{"https://example.com/x"}}); err == nil {
+				t.Error("a redirect answered as a publish")
+			}
+			n := asked.Load()
+			if sub, err := c.Subscribe(ctx(t), Subscribe{Topics: []string{"https://example.com/x"}}); err == nil {
+				sub.Close()
+				t.Error("a redirect answered as a subscription")
+			}
+			if asked.Load() == n {
+				t.Error("the subscription did not ask the hub")
+			}
+		})
+	}
+	if asked.Load() == 0 || reached.Load() != 0 {
+		t.Fatalf("hub asked %d times, redirect target reached %d times", asked.Load(), reached.Load())
+	}
+}

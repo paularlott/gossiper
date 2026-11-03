@@ -71,7 +71,8 @@ type Options struct {
 	// Transport selects how the client publishes. Default Auto.
 	Transport Transport
 	// HTTPClient makes the requests. Default: a client of its own, with a 30s timeout for a POST per update.
-	// Streams (the publish stream, the subscriptions) last as long as they need, whatever its Timeout.
+	// Streams (the publish stream, the subscriptions) last as long as they need, whatever its Timeout. Redirects are
+	// not followed (the token goes to the hub's URL only), unless it has a CheckRedirect of its own.
 	HTTPClient *http.Client
 	// CleartextHTTP2 makes the default HTTP client speak HTTP/2 to an http:// URL (h2c, prior knowledge): a gossiper
 	// hub, reached directly, speaks it, and the publish stream and the subscriptions then share one connection. A hub
@@ -196,6 +197,11 @@ func New(o Options) (*Client, error) {
 		openTimeout: 10 * time.Second, answerTimeout: 30 * time.Second, subs: map[*Subscription]struct{}{}}
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 	c.done = c.ctx.Done()
+	if c.http != nil && c.http.CheckRedirect == nil {
+		hc := *c.http
+		hc.CheckRedirect = noRedirect
+		c.http = &hc
+	}
 	if c.http == nil {
 		tlsConfig, err := clientTLS(o)
 		if err != nil {
@@ -215,7 +221,7 @@ func New(o Options) (*Client, error) {
 			tr.Protocols = new(http.Protocols)
 			tr.Protocols.SetUnencryptedHTTP2(true)
 		}
-		c.http = &http.Client{Timeout: 30 * time.Second, Transport: tr}
+		c.http = &http.Client{Timeout: 30 * time.Second, Transport: tr, CheckRedirect: noRedirect}
 		c.own = tr
 	}
 	sc := *c.http
@@ -223,6 +229,11 @@ func New(o Options) (*Client, error) {
 	c.stream = &sc
 	return c, nil
 }
+
+// noRedirect refuses a redirect: the answer is the hub's, and is not followed. Every request carries the token, which
+// goes to the hub's URL and nowhere else (Go would send it on to another port or a subdomain of the hub's host, and
+// from https to http).
+func noRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 
 // clientTLS is the default HTTP client's TLS configuration: TLSConfig, with CAFile and InsecureSkipVerify.
 func clientTLS(o Options) (*tls.Config, error) {
