@@ -627,6 +627,10 @@ func TestPublishReservedNamespace(t *testing.T) {
 		"./mercure",
 		"mercure/subscriptions/x",
 		"../../.well-known/mercure/x",
+		" /.well-known/mercure/subscriptions/exact/a/b", // spaces around it, which URL parsers (URL Pattern too) trim
+		"/.well-known/mercure/subscriptions/x ",
+		"  https://localhost/.well-known/mercure/subscriptions/x",
+		" mercure",
 	}
 	notReserved := []string{
 		"/.well-known/mercurex",
@@ -643,6 +647,8 @@ func TestPublishReservedNamespace(t *testing.T) {
 		"http://[::1",
 		"tag:example.com,2026:.well-known/mercure",
 		"https://example.com/.well-known/mercure.json",
+		" general",
+		"hello world",
 	}
 	forProtocols(t, func(t *testing.T, p Protocol) {
 		for _, hubURL := range []string{"", "https://hub.example.com/.well-known/mercure"} {

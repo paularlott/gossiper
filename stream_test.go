@@ -147,10 +147,11 @@ func TestFiniteStream(t *testing.T) {
 {"topic":["https://b.test/b"],"data":"forbidden"}
 {"data":"no topic"}
 {"topic":["https://b.test/a"],"bogus":1}
+{"topic":[" /.well-known/mercure/subscriptions/exact/a/b"],"data":"forged"}
 {"topic":["https://b.test/a"],"data":"` + strings.Repeat("x", 5000) + `"}
 {"topic":["https://b.test/a"],"data":"two","id":"urn:two","type":"t","retry":5}`
 	got := e.finite(t, tokenFor(t, []string{"https://b.test/a"}, nil), body)
-	want := []streamAck{{}, {Line: 3, Status: 400}, {Line: 4, Status: 403}, {Line: 5, Status: 400}, {Line: 6, Status: 400}, {Line: 7, Status: 413},
+	want := []streamAck{{}, {Line: 3, Status: 400}, {Line: 4, Status: 403}, {Line: 5, Status: 400}, {Line: 6, Status: 400}, {Line: 7, Status: 400}, {Line: 8, Status: 413},
 		{Status: 413}} // and the stream ends, saying why
 	if len(got) != len(want) {
 		t.Fatalf("answers: %+v", got)

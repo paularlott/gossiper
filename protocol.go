@@ -345,10 +345,12 @@ func (h *Hub) validate(u *Update) error {
 // reserved reports whether topic, resolved against the hub URL, names the hub's own path or a path under it
 // (whatever its scheme and host): those topics are the hub's own (subscription events), and a publisher must not
 // forge them. The path is compared decoded and with its dot segments removed, so /.well-known/%6Dercure/... and
-// /.well-known/mercure/../mercure/... are caught; a backslash counts as a slash, and a stray "%" (not starting an
-// escape) as itself, as browsers read them. A topic that is still not a URL reference names no hub path.
+// /.well-known/mercure/../mercure/... are caught; a backslash counts as a slash, a stray "%" (not starting an
+// escape) as itself, and leading and trailing spaces (the C0 controls and spaces URL parsers trim) are dropped, as
+// browsers and the URL Pattern matcher read them: " /.well-known/mercure/..." names the hub's path for a
+// match_urlpattern subscriber. A topic that is still not a URL reference names no hub path.
 func (h *Hub) reserved(topic string) bool {
-	s := strings.ReplaceAll(topic, `\`, "/")
+	s := strings.ReplaceAll(strings.TrimFunc(topic, func(r rune) bool { return r <= 0x20 }), `\`, "/")
 	ref, err := url.Parse(s)
 	if err != nil {
 		if ref, err = url.Parse(escapeStrayPercent(s)); err != nil {
