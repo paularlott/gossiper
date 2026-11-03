@@ -931,3 +931,82 @@ func TestRedirectsNotFollowed(t *testing.T) {
 		t.Fatalf("hub asked %d times, redirect target reached %d times", asked.Load(), reached.Load())
 	}
 }
+
+// endless is a stream that never ends a line: "data:" then as many bytes as are read. It counts what it gave.
+type endless struct{ n int }
+
+func (e *endless) Read(p []byte) (int, error) {
+	if e.n == 0 && len(p) >= 5 {
+		e.n = copy(p, "data:")
+		return e.n, nil
+	}
+	for i := range p {
+		p[i] = 'A'
+	}
+	e.n += len(p)
+	return len(p), nil
+}
+
+// An event over the limit ends the stream, whether one line that never ends or many lines of data, without reading
+// (or holding) much past the limit; events up to it are delivered.
+func TestMaxEventSize(t *testing.T) {
+	const limit = 1 << 20
+	r := &endless{}
+	if err := readSSE(r, limit, func(Event) bool { t.Error("an event from an endless line"); return true }); err == nil || !strings.Contains(err.Error(), "MaxEventSize") {
+		t.Fatalf("endless line: %v", err)
+	}
+	if r.n > limit+256<<10 {
+		t.Errorf("read %d bytes of an endless line with a limit of %d", r.n, limit)
+	}
+
+	lines := strings.Repeat("data: "+strings.Repeat("x", 1000)+"\n", 2000) + "\n" // 2 MB in one event
+	if err := readSSE(strings.NewReader(lines), limit, func(Event) bool { t.Error("an event over the limit"); return true }); err == nil {
+		t.Fatal("many data lines over the limit: no error")
+	}
+
+	var got []Event
+	ok := "id: a\ndata: " + strings.Repeat("y", limit) + "\n\nid: b\ndata: one\ndata: two\n\n"
+	if err := readSSE(strings.NewReader(ok), limit, func(ev Event) bool { got = append(got, ev); return true }); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || len(got[0].Data) != limit || got[1].Data != "one\ntwo" {
+		t.Fatalf("events up to the limit: %d events", len(got))
+	}
+}
+
+// A hub streaming an endless line to a subscription: the client tells OnError and does not hold it.
+func TestSubscriptionEventTooLarge(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data:")
+		chunk := []byte(strings.Repeat("A", 64<<10))
+		for range 1000 { // 64 MB, unless the client stops reading
+			if _, err := w.Write(chunk); err != nil {
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+	errs := make(chan error, 16)
+	c, err := New(Options{URL: srv.URL, Token: "t", MaxEventSize: 256 << 10, OnError: func(err error) {
+		select {
+		case errs <- err:
+		default:
+		}
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if sub, err := c.Subscribe(ctx(t), Subscribe{Topics: []string{"https://example.com/x"}}); err == nil {
+		defer sub.Close()
+	}
+	select {
+	case err := <-errs:
+		if !strings.Contains(err.Error(), "MaxEventSize") {
+			t.Fatalf("OnError: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("no error for an event over MaxEventSize")
+	}
+}

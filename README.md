@@ -122,7 +122,7 @@ for ev := range sub.Events() {
 - **TLS:** `CAFile` trusts a hub's certificate beside the system's (a private CA, or a node's `self-signed.crt`); `InsecureSkipVerify` takes any certificate, for development only.
 - **Bypassing the proxy:** a service inside the cluster can talk to a node directly, with `URL` the node's address and `Host` the host name the hub (a tenant's) is reached at: `client.Options{URL: "https://10.0.0.5:8080/.well-known/mercure", Host: "events.example", CAFile: "node.crt"}`. To a node with `--http-only`, `CleartextHTTP2` makes the publish stream and every subscription share one connection, as HTTPS does by itself.
 - **Order:** a client's publishes keep their order, resends included.
-- **Subscriptions** reconnect by themselves and resume from their last event ID: after a lost connection, a node shutting down, or an expired token (`TokenFunc` supplies fresh ones). One the hub refuses for good (401 even with a fresh token, 403, 404) ends, and `Err` says why.
+- **Subscriptions** reconnect by themselves and resume from their last event ID: after a lost connection, a node shutting down, or an expired token (`TokenFunc` supplies fresh ones). One the hub refuses for good (401 even with a fresh token, 403, 404) ends, and `Err` says why. An event over `MaxEventSize` (default 8 MiB; raise it with the hub's `--max-publish-size`) ends the stream rather than fill the client's memory.
 - **The publish stream** reopens by itself and sends again, first and in order, what its hub did not take. A stream that cannot open is retried with a growing delay (up to 10s); HTTP/2 pings, and 30s of silence while answers are due, catch a dead connection.
 
 ## Multi-tenancy

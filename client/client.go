@@ -94,6 +94,10 @@ type Options struct {
 	// RetryStream is how long Auto publishes with a POST per update after a hub refused a stream, before it tries
 	// again. Default one minute.
 	RetryStream time.Duration
+	// MaxEventSize bounds an event a subscription takes, in bytes (its data, and any one line of it): a stream with a
+	// larger one ends and reconnects, with the error told to OnError, rather than hold what the hub sends without
+	// limit. Default 8 MiB, well over a gossiper hub's default --max-publish-size (1 MiB); raise it with that.
+	MaxEventSize int
 	// OnError, when set, is told of errors the client recovers from by itself: a publish stream lost, a subscription
 	// that reconnects.
 	OnError func(error)
@@ -192,6 +196,9 @@ func New(o Options) (*Client, error) {
 	}
 	if o.RetryStream <= 0 {
 		o.RetryStream = time.Minute
+	}
+	if o.MaxEventSize <= 0 {
+		o.MaxEventSize = 8 << 20
 	}
 	c := &Client{opts: o, hub: u, http: o.HTTPClient, slots: make(chan struct{}, o.MaxInFlight),
 		openTimeout: 10 * time.Second, answerTimeout: 30 * time.Second, subs: map[*Subscription]struct{}{}}

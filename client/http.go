@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -110,7 +111,7 @@ func (s *Subscription) followSSE(ctx context.Context, onOpen func()) error {
 	// The hub sends a heartbeat on idle streams: a stream silent for sseIdle is gone (a half-open connection, say).
 	idle := time.AfterFunc(sseIdle, cancel)
 	defer idle.Stop()
-	err = readSSE(&idleReader{r: resp.Body, t: idle}, func(ev Event) bool {
+	err = readSSE(&idleReader{r: resp.Body, t: idle}, c.opts.MaxEventSize, func(ev Event) bool {
 		// The ID is recorded before the event is delivered, so LastEventID names it as soon as the caller has it; and
 		// put back if it cannot be, so that a reconnection does not skip it.
 		s.mu.Lock()
@@ -157,8 +158,12 @@ func (i *idleReader) Read(p []byte) (int, error) {
 }
 
 // readSSE parses a Server-Sent Events stream, calling emit for each event until emit returns false or the stream ends.
-func readSSE(r io.Reader, emit func(Event) bool) error {
+// An event whose data, or any one line, is over limit bytes ends it with an error: what the hub sends is not held
+// without limit.
+func readSSE(r io.Reader, limit int, emit func(Event) bool) error {
 	br := bufio.NewReaderSize(r, 64<<10)
+	tooLarge := fmt.Errorf("mercure: event over %d bytes (Options.MaxEventSize)", limit)
+	lineLimit := limit + 4096 // room for the field's name
 	var ev Event
 	var data, long []byte
 	hasData := false
@@ -166,9 +171,12 @@ func readSSE(r io.Reader, emit func(Event) bool) error {
 		line, err := br.ReadSlice('\n')
 		if err == bufio.ErrBufferFull { // longer than the buffer: gathered
 			long = append(long[:0], line...)
-			for err == bufio.ErrBufferFull {
+			for err == bufio.ErrBufferFull && len(long) <= lineLimit {
 				line, err = br.ReadSlice('\n')
 				long = append(long, line...)
+			}
+			if len(long) > lineLimit {
+				return tooLarge
 			}
 			line = long
 		}
@@ -207,6 +215,9 @@ func readSSE(r io.Reader, emit func(Event) bool) error {
 		case "data":
 			if hasData {
 				data = append(data, '\n')
+			}
+			if len(data)+len(value) > limit {
+				return tooLarge
 			}
 			data = append(data, value...)
 			hasData = true
