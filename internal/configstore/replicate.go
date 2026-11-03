@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/paularlott/gossip"
+	"github.com/paularlott/gossip/hlc"
 )
 
 // metaKey is the gossip metadata key every node with a running store publishes, set to "on".
@@ -102,6 +103,13 @@ func (s *Store) fromWire(ws []wireRecord) []Record {
 		w := &ws[i]
 		if validKey(w.K) != nil || len(w.V) > MaxValueBytes || w.O == "" || len(w.O) > maxOrigin || w.T == 0 {
 			s.log.Warn("configstore: dropping an invalid record from a peer", "key", w.K, "origin", w.O)
+			continue
+		}
+		if ahead := hlc.Timestamp(w.T).Ahead(time.Now()); ahead > maxVersionAhead {
+			// Refused until this node's clock catches up with it: a peer whose clock is ahead (or a record stamped
+			// in the future) does not get to order every later edit.
+			s.log.Warn("configstore: dropping a record from a peer stamped ahead of this node's clock (check the clocks)",
+				"key", w.K, "origin", w.O, "ahead", ahead.String())
 			continue
 		}
 		r := Record{Key: w.K, Value: w.V, Version: w.T, Origin: w.O, Deleted: w.D}

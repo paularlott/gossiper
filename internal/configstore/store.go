@@ -44,6 +44,10 @@ const (
 	MaxKeyBytes   = 512
 	MaxValueBytes = 1 << 20
 	maxOrigin     = 128 // bytes of a record's Origin received from a peer
+	// maxVersionAhead bounds how far ahead of this node's clock a peer's record may be stamped (the nodes' clocks are
+	// synchronised; gossip refuses packets a minute off too). Witnessed, a version far ahead would be the floor of every
+	// later write here and on every node it reaches, and win every edit and delete until the clocks caught up.
+	maxVersionAhead = time.Minute
 )
 
 // Defaults of Options.

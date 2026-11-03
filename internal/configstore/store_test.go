@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/paularlott/gossip/hlc"
 	"github.com/paularlott/gossiper/internal/configstore"
 )
 
@@ -506,5 +507,35 @@ func TestNewDatabaseIsPrivate(t *testing.T) {
 func deletePrefix(tx *configstore.Tx, prefix string) {
 	for _, r := range tx.List(prefix) {
 		tx.Delete(r.Key)
+	}
+}
+
+// A peer's record stamped far ahead of this node's clock is refused: it does not bring back a deleted record, nor
+// move the clock that orders later writes. One a little ahead (clocks within the synchronised skew) is taken.
+func TestPeerVersionFarAheadRefused(t *testing.T) {
+	s := openSingle(t, filepath.Join(t.TempDir(), "c.db"), nil)
+	put(t, s, "tenant/acme", "original")
+	del(t, s, "tenant/acme")
+	far := uint64(hlc.FromTime(time.Now().Add(20 * 365 * 24 * time.Hour)))
+	for _, deleted := range []bool{false, true} {
+		r := configstore.Record{Key: "tenant/acme", Version: far, Origin: "peer", Deleted: deleted}
+		if !deleted {
+			r.Value = []byte("revived")
+		}
+		if n, err := s.MergeFromPeer([]configstore.Record{r}); err != nil || n != 0 {
+			t.Fatalf("a record 20 years ahead (deleted %v): merged %d, %v", deleted, n, err)
+		}
+	}
+	if _, ok := s.Get("tenant/acme"); ok {
+		t.Fatal("the deleted record came back")
+	}
+	put(t, s, "tenant/globex", "mine")
+	if r, _ := s.Get("tenant/globex"); r.Version >= far || hlc.Timestamp(r.Version).Ahead(time.Now()) > time.Second {
+		t.Fatalf("the clock moved: a new write is stamped %v", hlc.Timestamp(r.Version).Time())
+	}
+
+	near := uint64(hlc.FromTime(time.Now().Add(30 * time.Second)))
+	if n, err := s.MergeFromPeer([]configstore.Record{{Key: "tenant/initech", Value: []byte("peer"), Version: near, Origin: "peer"}}); err != nil || n != 1 {
+		t.Fatalf("a record 30s ahead: merged %d, %v", n, err)
 	}
 }
