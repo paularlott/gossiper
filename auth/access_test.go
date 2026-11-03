@@ -629,12 +629,13 @@ func TestAccessCloseAndReady(t *testing.T) {
 	}
 }
 
-func TestAccessExplicitHMACMakesPEMASecret(t *testing.T) {
+// A PEM public key is never an HMAC secret, even with an HMAC algorithm named: anyone with the key could sign.
+func TestAccessExplicitHMACRefusesPEM(t *testing.T) {
 	es := keyFor(t, "ES256")
-	v, clock := atNew(t, AccessConfig{Issuers: []Issuer{{Issuer: atIss, Key: es.pem, Algorithms: []string{"HS256"}}}})
-	k := testKey{alg: "HS256", method: jwt.SigningMethodHS256, priv: []byte(es.pem)}
-	atOK(t, v, atMint(t, k, atClaims(clock, atIss, nil), nil))
-	atInvalid(t, v, atMint(t, es, atClaims(clock, atIss, nil), nil))
+	_, err := NewAccessVerifier(AccessConfig{Issuers: []Issuer{{Issuer: atIss, Key: es.pem, Algorithms: []string{"HS256"}}}})
+	if err == nil || !strings.Contains(err.Error(), "PEM") {
+		t.Fatalf("a PEM key taken as an HMAC secret: %v", err)
+	}
 }
 
 // An API that is not a hub skips the Mercure details (a malformed one does not refuse the token) and reads its own

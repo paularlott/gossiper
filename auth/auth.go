@@ -86,10 +86,47 @@ type KeyConfig struct {
 func WeakSecret(k KeyConfig) bool {
 	alg := k.Algorithm
 	if alg == "" {
-		alg = "HS256"
+		alg, _ = DefaultAlgorithm(k.Key)
 	}
 	info, ok := algs[alg]
 	return ok && k.Key != "" && info.kind == kindHMAC && len(k.Key) < info.minSecret
+}
+
+// DefaultAlgorithm is the algorithm a static key verifies with when none is given: a PEM public key's own (RS256 for
+// RSA, ES256, ES384 or ES512 by the ECDSA curve, EdDSA for Ed25519), HS256 for a secret. A public key is never taken
+// as an HMAC secret: anyone who has it could sign tokens with it.
+func DefaultAlgorithm(key string) (string, error) {
+	if !isPEM(key) {
+		return "HS256", nil
+	}
+	pub, err := parsePublicKeyPEM(key)
+	if err != nil {
+		return "", err
+	}
+	switch k := pub.(type) {
+	case *rsa.PublicKey:
+		return "RS256", nil
+	case *ecdsa.PublicKey:
+		switch k.Curve.Params().BitSize {
+		case 256:
+			return "ES256", nil
+		case 384:
+			return "ES384", nil
+		case 521:
+			return "ES512", nil
+		}
+	case ed25519.PublicKey:
+		return "EdDSA", nil
+	}
+	return "", fmt.Errorf("auth: no algorithm for a %s key", describeKey(pub))
+}
+
+// isPEM reports whether key is PEM-encoded: a public key, never an HMAC secret.
+func isPEM(key string) bool { return strings.Contains(key, "-----BEGIN") }
+
+// errPEMSecret refuses an HMAC algorithm with a PEM key: the public key would be the secret.
+func errPEMSecret(alg string) error {
+	return fmt.Errorf("auth: %s takes a secret, not a PEM public key (anyone with the key could sign tokens): set the key's own algorithm, such as RS256, or leave the algorithm out", alg)
 }
 
 // Verifier verifies tokens against a configured key or key set.
@@ -143,11 +180,17 @@ func newVerifier(cfg KeyConfig, o internalOpts) (*Verifier, error) {
 
 	alg := cfg.Algorithm
 	if alg == "" {
-		alg = "HS256"
+		var err error
+		if alg, err = DefaultAlgorithm(cfg.Key); err != nil {
+			return nil, err
+		}
 	}
 	info, ok := algs[alg]
 	if !ok {
 		return nil, fmt.Errorf("auth: unsupported algorithm %q", alg)
+	}
+	if info.kind == kindHMAC && isPEM(cfg.Key) {
+		return nil, errPEMSecret(alg)
 	}
 
 	v := &Verifier{

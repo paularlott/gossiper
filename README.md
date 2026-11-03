@@ -284,7 +284,7 @@ Every setting is a flag, a `GOSSIPER_*` environment variable or a key in `gossip
 | `--tls-cert`, `--tls-key` | self-signed | the certificate and key served (PEM) |
 | `--tls-dir`, `--tls-hosts` | made at each start | where the self-signed certificate is kept; further names and addresses for it |
 | `--protocol` | `both` | `both`, `modern` (Mercure 1.0) or `legacy` (draft-07) |
-| `--publisher-key`, `--publisher-alg`, `--publisher-jwks-url` | HS256 for a secret | publishers' JWT key: an HMAC secret, a PEM public key (RSA of 2048 bits or more) or a JWK Set URL (public-key algorithms only, unless `--publisher-alg` names an HS one) |
+| `--publisher-key`, `--publisher-alg`, `--publisher-jwks-url` | HS256 for a secret, the key's own for a PEM key | publishers' JWT key: an HMAC secret, a PEM public key (RSA of 2048 bits or more; never taken as an HMAC secret) or a JWK Set URL (public-key algorithms only, unless `--publisher-alg` names an HS one) |
 | `--subscriber-key`, `--subscriber-alg`, `--subscriber-jwks-url` | publisher's | subscribers' JWT key |
 | `--trusted-issuers` | `https://localhost` | `iss` values accepted with those keys (Mercure 1.0) |
 | `--authorization-servers` | | OAuth authorization servers, keys by discovery (Mercure 1.0) |

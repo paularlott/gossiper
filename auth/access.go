@@ -285,9 +285,11 @@ func staticKey(is Issuer, explicit map[string]struct{}) (any, error) {
 	switch {
 	case hmacAlg && otherAlg:
 		return nil, errors.New("algorithms mix HMAC and public-key algorithms")
+	case hmacAlg && isPEM(is.Key):
+		return nil, errPEMSecret("HMAC")
 	case hmacAlg:
 		return []byte(is.Key), nil
-	case otherAlg || strings.Contains(is.Key, "-----BEGIN"):
+	case otherAlg || isPEM(is.Key):
 		return parsePublicKeyPEM(is.Key)
 	}
 	return []byte(is.Key), nil

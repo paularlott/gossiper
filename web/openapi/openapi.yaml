@@ -272,7 +272,7 @@ components:
           description: Publishers' JWT key, an HMAC secret (at least as long as its algorithm's hash, 32 bytes for HS256, unless the server allows weak keys) or a PEM public key; write-only when HMAC
         publisher_alg:
           type: string
-          description: Its algorithm (default HS256)
+          description: Its algorithm. Default HS256 for a secret, and a PEM public key's own (RS256 for RSA, ES256, ES384 or ES512 by the curve, EdDSA for Ed25519); an HMAC algorithm with a PEM key is refused
           examples: [HS256, RS256, ES256, EdDSA]
         publisher_jwks_url:
           type: string

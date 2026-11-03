@@ -131,13 +131,9 @@ func mercureTenants(base gossiper.Config, specs []tenantSpec) []gossiper.Tenant 
 		m := t.Mercure
 		cfg := base
 		cfg.PublisherKey = auth.KeyConfig{Key: m.PublisherKey, Algorithm: m.PublisherAlg, JWKSURL: m.PublisherJWKSURL}
-		if cfg.PublisherKey.Algorithm == "" && cfg.PublisherKey.Key != "" {
-			cfg.PublisherKey.Algorithm = "HS256"
-		}
+		defaultAlgorithm(&cfg.PublisherKey)
 		cfg.SubscriberKey = auth.KeyConfig{Key: m.SubscriberKey, Algorithm: m.SubscriberAlg, JWKSURL: m.SubscriberJWKSURL}
-		if cfg.SubscriberKey.Algorithm == "" && cfg.SubscriberKey.Key != "" {
-			cfg.SubscriberKey.Algorithm = "HS256"
-		}
+		defaultAlgorithm(&cfg.SubscriberKey)
 		cfg.TrustedIssuers = m.TrustedIssuers
 		cfg.Issuers = nil
 		for _, as := range m.AuthorizationServers {

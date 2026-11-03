@@ -139,6 +139,18 @@ func loadCAs(path string) (*x509.CertPool, error) {
 	return pool, nil
 }
 
+// defaultAlgorithm sets a static key's algorithm, when none is given, to the key's own: HS256 for a secret, RS256,
+// ES256 (and so on) or EdDSA for a PEM public key, never HMAC with a public key. A key that does not parse is left
+// as it is, for its verifier to refuse.
+func defaultAlgorithm(k *auth.KeyConfig) {
+	if k.Algorithm != "" || k.Key == "" {
+		return
+	}
+	if alg, err := auth.DefaultAlgorithm(k.Key); err == nil {
+		k.Algorithm = alg
+	}
+}
+
 // Defaults returns the default settings.
 func Defaults() Settings {
 	return Settings{
@@ -257,17 +269,16 @@ func New(s Settings, log logger.Logger) (*Server, error) {
 		NodeID:                    s.NodeID,
 		Logger:                    log,
 	}
-	// HS256 is the default of a secret only: with a JWK Set and no algorithm, every public-key algorithm is accepted.
+	// A key's algorithm defaults to its own (HS256 for a secret, a PEM public key's own); with a JWK Set and no
+	// algorithm, every public-key algorithm is accepted.
 	if cfg.PublisherKey.Key == "" && cfg.PublisherKey.JWKSURL == "" {
 		cfg.PublisherKey = auth.KeyConfig{}
-	} else if cfg.PublisherKey.Algorithm == "" && cfg.PublisherKey.Key != "" {
-		cfg.PublisherKey.Algorithm = "HS256"
 	}
 	if cfg.SubscriberKey.Key == "" && cfg.SubscriberKey.JWKSURL == "" {
 		cfg.SubscriberKey = auth.KeyConfig{}
-	} else if cfg.SubscriberKey.Algorithm == "" && cfg.SubscriberKey.Key != "" {
-		cfg.SubscriberKey.Algorithm = "HS256"
 	}
+	defaultAlgorithm(&cfg.PublisherKey)
+	defaultAlgorithm(&cfg.SubscriberKey)
 	if cfg.MaxConnectionLifetime, err = duration("max connection lifetime", s.MaxLifetime); err != nil {
 		return nil, err
 	}

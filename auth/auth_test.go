@@ -626,3 +626,38 @@ func TestWeakSecretAndInsecureJWKS(t *testing.T) {
 	}
 	v.Close()
 }
+
+// Without an algorithm a PEM public key verifies with its own, and an HMAC algorithm with it is refused: the public
+// key is never an HMAC secret.
+func TestDefaultAlgorithm(t *testing.T) {
+	for _, alg := range []string{"RS256", "ES256", "ES384", "ES512", "EdDSA", "HS256"} {
+		k := keyFor(t, alg)
+		if got, err := DefaultAlgorithm(k.pem); err != nil || got != alg {
+			t.Errorf("%s key: %q %v", alg, got, err)
+		}
+		v, err := NewVerifier(KeyConfig{Key: k.pem})
+		if err != nil {
+			t.Fatalf("%s key without an algorithm: %v", alg, err)
+		}
+		if _, err := v.Verify(ctx(), sign(t, k, mercureClaims(nil), nil)); err != nil {
+			t.Errorf("%s key without an algorithm: its token refused: %v", alg, err)
+		}
+	}
+	rs := keyFor(t, "RS256")
+	v, _ := NewVerifier(KeyConfig{Key: rs.pem})
+	forged := testKey{alg: "HS256", method: jwt.SigningMethodHS256, priv: []byte(rs.pem)}
+	if _, err := v.Verify(ctx(), sign(t, forged, mercureClaims(nil), nil)); err == nil {
+		t.Error("a token signed with the public key's text as an HS256 secret verified")
+	}
+	for _, alg := range []string{"HS256", "HS384", "HS512"} {
+		if _, err := NewVerifier(KeyConfig{Key: rs.pem, Algorithm: alg}); err == nil || !strings.Contains(err.Error(), "PEM") {
+			t.Errorf("%s with a PEM key: %v", alg, err)
+		}
+	}
+	if WeakSecret(KeyConfig{Key: rs.pem}) {
+		t.Error("a PEM key reported as a weak secret")
+	}
+	if _, err := DefaultAlgorithm("-----BEGIN PUBLIC KEY-----\nnot base64\n-----END PUBLIC KEY-----\n"); err == nil {
+		t.Error("a PEM block that does not parse got an algorithm")
+	}
+}
