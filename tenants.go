@@ -453,6 +453,9 @@ func (ts *Tenants) Names() []string { return slices.Clone(ts.set.Load().names) }
 // Apply implements Host: the update goes to its tenant's hub. An update of a tenant this node does not have is
 // dropped.
 func (ts *Tenants) Apply(u *Update) {
+	if u == nil {
+		return
+	}
 	if h := ts.set.Load().hubs[u.Tenant]; h != nil {
 		h.Apply(u)
 	}
@@ -470,6 +473,9 @@ func (ts *Tenants) Stored(ctx context.Context) error {
 
 // Restore implements Host.
 func (ts *Tenants) Restore(u *Update) {
+	if u == nil {
+		return
+	}
 	if h := ts.set.Load().hubs[u.Tenant]; h != nil {
 		h.Restore(u)
 	}

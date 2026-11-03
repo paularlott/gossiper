@@ -774,13 +774,19 @@ func (t *Transport) copyHistory(n *gossip.Node, from uint64, apply func(*gossipe
 			return false, errClosed
 		default:
 		}
+		// A peer's page is data: a null entry (a buggy or hostile peer's) is neither applied nor resumed after, and a
+		// page without an update ends the copy rather than ask for the same one again.
+		var last *gossiper.Update
 		for _, u := range resp.U {
+			if u == nil {
+				continue
+			}
 			apply(u)
+			last = u
 		}
-		if !resp.More || len(resp.U) == 0 {
+		if !resp.More || last == nil {
 			return resp.Ready, nil
 		}
-		last := resp.U[len(resp.U)-1]
 		req.S, req.O = last.Stamp, last.Origin
 	}
 }

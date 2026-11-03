@@ -934,3 +934,14 @@ func TestTenantsAuthorizationHeaderBeatsCookie(t *testing.T) {
 	}
 
 }
+
+// A nil update handed to the tenants' host (a null in a cluster peer's page) is ignored, as a hub ignores it.
+func TestTenantsIgnoreNilUpdate(t *testing.T) {
+	ts, err := NewTenants([]Tenant{{Name: "a", Hosts: []string{"a.test"}, Config: Config{PublisherKey: auth.KeyConfig{Key: strings.Repeat("k", 32)}}}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ts.Close(context.Background())
+	ts.Apply(nil)
+	ts.Restore(nil)
+}
