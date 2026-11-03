@@ -314,7 +314,7 @@ func newCluster(t *testing.T, o clusterOpts) *cluster {
 			logPath: filepath.Join(dir, "gossiper.log")}
 		n.args = []string{"serve",
 			"--config", filepath.Join(dir, "none.toml"),
-			"--listen", fmt.Sprintf("127.0.0.1:%d", n.http),
+			"--listen", fmt.Sprintf("127.0.0.1:%d", n.http), "--http-only",
 			"--publisher-key", secret, "--anonymous", "--metrics",
 			"--log-format", "json", "--log-level", "info", "--shutdown-timeout", "10s",
 			"--resource-identifier", "https://failover.test/.well-known/mercure",

@@ -9,12 +9,14 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	stdlog "log"
 	"net"
 	"net/http"
 	"net/http/pprof"
 	"net/netip"
 	"net/url"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -38,8 +40,11 @@ type Settings struct {
 	Listen         string
 	AdminListen    string   // the admin API, its docs, metrics and profiling on a listener of their own (empty: on Listen)
 	TrustedProxies []string // proxies (addresses or CIDR ranges) whose X-Forwarded-For names the client
-	TLSCert        string
+	HTTPOnly       bool     // plain HTTP (and h2c), behind a TLS-terminating proxy; HTTPS otherwise
+	TLSCert        string   // with TLSKey, the certificate served; else a self-signed one
 	TLSKey         string
+	TLSDir         string   // the self-signed certificate is kept here (empty: made at each start)
+	TLSHosts       []string // further names and addresses for the self-signed certificate
 	Metrics        bool
 	LogLevel       string
 	LogFmt         string
@@ -176,8 +181,9 @@ type Server struct {
 	log          logger.Logger
 	gossip       *gossip.Cluster
 	histDB       *historydb.Store
-	adminIdP     *adminIdP  // the admin API's identity provider, or nil
-	repl         replicator // the cluster transport, when clustered
+	adminIDP     *adminIDP   // the admin API's identity provider, or nil
+	certs        *certSource // the TLS certificate; nil with HTTPOnly
+	repl         replicator  // the cluster transport, when clustered
 	shutdown     time.Duration
 	shutdownWait time.Duration // ShutdownDelay
 	streams      *streamLimits
@@ -334,7 +340,19 @@ func New(s Settings, log logger.Logger) (*Server, error) {
 	if (s.AdminAudience != "" || s.AdminDetailType != "" || s.AdminScope != "") && s.AdminIssuer == "" {
 		return nil, errors.New("admin audience, detail type and scope: they need admin-issuer")
 	}
-	srv := &Server{settings: s, log: log, shutdown: shutdown, shutdownWait: shutdownWait, proxies: proxies,
+	certs, err := newServerCerts(s, log)
+	if err != nil {
+		return nil, fmt.Errorf("tls: %w", err)
+	}
+	if certs != nil && certs.selfSigned() {
+		where := filepath.Join(s.TLSDir, selfSignedCert)
+		if s.TLSDir == "" {
+			where = "none (made at each start; set tls-dir to keep it)"
+		}
+		log.Warn("serving HTTPS with a self-signed certificate: clients trust its file as a CA file, or skip verification",
+			"file", where, "sha256", certs.fingerprint(), "hosts", strings.Join(certs.hosts, ","))
+	}
+	srv := &Server{settings: s, log: log, shutdown: shutdown, shutdownWait: shutdownWait, proxies: proxies, certs: certs,
 		mercureApplied: map[string]tenantSpec{}, reported: map[string]bool{}}
 	if srv.tenants, err = loadTenants(s.TenantsFile); err != nil {
 		return nil, err
@@ -359,7 +377,7 @@ func New(s Settings, log logger.Logger) (*Server, error) {
 		log.Warn("allow-insecure-key-urls: key and discovery URLs may use plain HTTP or a certificate that does not verify; development only")
 	}
 	if s.AdminIssuer != "" {
-		if srv.adminIdP, err = newAdminIdP(s.AdminIssuer, s.AdminAudience, s.AdminDetailType, s.AdminScope, s.InsecureKeyURLs, cfg.KeyURLsCAs); err != nil {
+		if srv.adminIDP, err = newAdminIDP(s.AdminIssuer, s.AdminAudience, s.AdminDetailType, s.AdminScope, s.InsecureKeyURLs, cfg.KeyURLsCAs); err != nil {
 			if srv.histDB != nil {
 				_ = srv.histDB.Close()
 			}
@@ -367,8 +385,8 @@ func New(s Settings, log logger.Logger) (*Server, error) {
 		}
 	}
 	cleanup := func() {
-		if srv.adminIdP != nil {
-			srv.adminIdP.close()
+		if srv.adminIDP != nil {
+			srv.adminIDP.close()
 		}
 		if srv.store != nil {
 			_ = srv.store.Close()
@@ -532,7 +550,7 @@ func (s *Server) routes() (http.Handler, http.Handler) {
 		admin = http.NewServeMux()
 		s.healthRoutes(admin)
 	}
-	if s.store != nil && (s.settings.APIToken != "" || s.adminIdP != nil) {
+	if s.store != nil && (s.settings.APIToken != "" || s.adminIDP != nil) {
 		admin.HandleFunc("GET /api-docs", func(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/api-docs/", http.StatusMovedPermanently)
 		})
@@ -651,14 +669,17 @@ func (s *Server) Serve(ctx context.Context, ln, admin net.Listener) error {
 	errc := make(chan error, len(servers))
 	for i, hs := range servers {
 		go func() {
-			if s.settings.TLSCert != "" {
-				errc <- hs.ServeTLS(listeners[i], s.settings.TLSCert, s.settings.TLSKey)
+			if s.certs != nil {
+				errc <- hs.ServeTLS(listeners[i], "", "")
 			} else {
 				errc <- hs.Serve(listeners[i])
 			}
 		}()
 	}
-	s.log.Info("listening", "addr", ln.Addr().String(), "tls", s.settings.TLSCert != "")
+	if s.certs != nil {
+		go s.certs.watch()
+	}
+	s.log.Info("listening", "addr", ln.Addr().String(), "tls", s.certs != nil)
 	if admin != nil {
 		s.log.Info("admin listening", "addr", admin.Addr().String())
 	}
@@ -716,16 +737,40 @@ func (s *Server) httpServer(h http.Handler) *http.Server {
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    64 << 10,
 		Protocols:         new(http.Protocols),
+		ErrorLog:          stdlog.New(httpErrorLog{s.log}, "", 0),
 	}
 	// HTTP/2 also without TLS (h2c), behind a proxy that terminates TLS: a streaming publish and a client's
 	// subscriptions then share one connection.
 	hs.Protocols.SetHTTP1(true)
 	hs.Protocols.SetHTTP2(true)
 	hs.Protocols.SetUnencryptedHTTP2(true)
-	if s.settings.TLSCert != "" {
-		hs.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	if s.certs != nil {
+		hs.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: s.certs.GetCertificate}
 	}
 	return hs
+}
+
+// httpErrorLog takes the HTTP servers' own log lines into the server's log: failed TLS handshakes (scanners, clients
+// that do not trust a self-signed certificate) at debug, as they are the client's business, the rest as warnings.
+type httpErrorLog struct{ log logger.Logger }
+
+func (l httpErrorLog) Write(p []byte) (int, error) {
+	msg := strings.TrimSpace(string(p))
+	if strings.Contains(msg, "TLS handshake error") {
+		l.log.Debug(msg)
+	} else {
+		l.log.Warn(msg)
+	}
+	return len(p), nil
+}
+
+// ReloadCertificate loads the TLS certificate again now (SIGHUP): renewed files, or a self-signed certificate made
+// again. A renewal is also picked up by itself within an hour.
+func (s *Server) ReloadCertificate() error {
+	if s.certs == nil {
+		return nil
+	}
+	return s.certs.Reload()
 }
 
 // Close stops the hub and leaves the cluster.
@@ -747,8 +792,11 @@ func (s *Server) Close(ctx context.Context) {
 			s.log.Warn("history database did not close cleanly", "error", err.Error())
 		}
 	}
-	if s.adminIdP != nil {
-		s.adminIdP.close()
+	if s.adminIDP != nil {
+		s.adminIDP.close()
+	}
+	if s.certs != nil {
+		s.certs.Close()
 	}
 	if s.gossip != nil {
 		s.gossip.Leave()

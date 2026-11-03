@@ -167,7 +167,7 @@ func startGossiper(dir string, n int) ([]*node, error) {
 	for i := range n {
 		hp, gp := freePort(), freePort()
 		nd := &node{name: fmt.Sprintf("gossiper-%d", i+1), http: fmt.Sprintf("http://127.0.0.1:%d", hp)}
-		args := []string{"serve", "--listen", fmt.Sprintf("127.0.0.1:%d", hp), "--anonymous", "--publisher-key", secret,
+		args := []string{"serve", "--listen", fmt.Sprintf("127.0.0.1:%d", hp), "--http-only", "--anonymous", "--publisher-key", secret,
 			"--log-level", "warn", "--pprof", "--admin-listen", fmt.Sprintf("127.0.0.1:%d", freePort()),
 			"--max-subscribers-per-ip", "0"} // the subscribers all come from this machine
 		if n > 1 {

@@ -78,7 +78,7 @@ var adminRouteList = []adminRoute{
 
 // adminRoutes registers the admin API on mux.
 func (s *Server) adminRoutes(mux *http.ServeMux) {
-	a := &adminAPI{s: s, token: s.settings.APIToken, idp: s.adminIdP, limiter: newFailLimiter(60, time.Minute, maxFailEntries),
+	a := &adminAPI{s: s, token: s.settings.APIToken, idp: s.adminIDP, limiter: newFailLimiter(60, time.Minute, maxFailEntries),
 		bcrypts: make(chan struct{}, maxBcrypts)}
 	for _, rt := range adminRouteList {
 		mux.Handle(rt.method+" "+rt.path, a.auth(func(w http.ResponseWriter, r *http.Request) error {
@@ -93,7 +93,7 @@ func (s *Server) adminRoutes(mux *http.ServeMux) {
 type adminAPI struct {
 	s       *Server
 	token   string    // the static token ("" for none)
-	idp     *adminIdP // or nil
+	idp     *adminIDP // or nil
 	limiter *failLimiter
 	good    atomic.Pointer[[sha256.Size]byte] // the digest of the last token a bcrypt hash accepted
 	bcrypts chan struct{}                     // the bcrypt comparisons under way

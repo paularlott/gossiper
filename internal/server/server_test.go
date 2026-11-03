@@ -89,6 +89,7 @@ func settings() Settings {
 	s.PublisherKey = secret
 	s.Anonymous = true
 	s.Metrics = true
+	s.HTTPOnly = true // the tests speak plain HTTP; tls_test.go has the HTTPS ones
 	return s
 }
 

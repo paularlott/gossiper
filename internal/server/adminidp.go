@@ -69,16 +69,16 @@ func grantOf(r *http.Request) grant {
 	return g
 }
 
-// adminIdP verifies the admin API tokens of an identity provider.
-type adminIdP struct {
+// adminIDP verifies the admin API tokens of an identity provider.
+type adminIDP struct {
 	v          *auth.AccessVerifier
 	detailType string
 	scope      string
 }
 
-// newAdminIdP trusts the issuer, its keys found by discovery (RFC 8414, OpenID Connect), for tokens whose audience
+// newAdminIDP trusts the issuer, its keys found by discovery (RFC 8414, OpenID Connect), for tokens whose audience
 // includes audience; cas are trusted for its certificate as well as the system's.
-func newAdminIdP(issuer, audience, detailType, scope string, insecure bool, cas *x509.CertPool) (*adminIdP, error) {
+func newAdminIDP(issuer, audience, detailType, scope string, insecure bool, cas *x509.CertPool) (*adminIDP, error) {
 	if detailType == "" {
 		detailType = DefaultAdminDetailType
 	}
@@ -96,14 +96,14 @@ func newAdminIdP(issuer, audience, detailType, scope string, insecure bool, cas 
 	if err != nil {
 		return nil, err
 	}
-	return &adminIdP{v: v, detailType: detailType, scope: scope}, nil
+	return &adminIDP{v: v, detailType: detailType, scope: scope}, nil
 }
 
-func (p *adminIdP) close() { p.v.Close() }
+func (p *adminIDP) close() { p.v.Close() }
 
 // grant verifies tok and returns what it allows: an error for a token that is not valid, errNoAdminRights for one
 // that is but allows nothing.
-func (p *adminIdP) grant(ctx context.Context, tok string) (grant, error) {
+func (p *adminIDP) grant(ctx context.Context, tok string) (grant, error) {
 	c, err := p.v.Verify(ctx, tok)
 	if err != nil {
 		return grant{}, err

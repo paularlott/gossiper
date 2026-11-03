@@ -218,7 +218,7 @@ func TestClusterSurvivorsAfterNodeCloses(t *testing.T) {
 func TestHTTPTLS(t *testing.T) {
 	p := writePKI(t)
 	s := settings()
-	s.TLSCert, s.TLSKey = p.cert, p.key
+	s.HTTPOnly, s.TLSCert, s.TLSKey = false, p.cert, p.key
 	srv, err := New(s, nil)
 	if err != nil {
 		t.Fatal(err)

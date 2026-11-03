@@ -20,22 +20,22 @@ import (
 
 const adminAudience = "https://admin.test/api"
 
-// fakeIdP is an OAuth authorization server: RFC 8414 metadata and a JWK Set, and access tokens (RFC 9068) it signs.
-type fakeIdP struct {
+// fakeIDP is an OAuth authorization server: RFC 8414 metadata and a JWK Set, and access tokens (RFC 9068) it signs.
+type fakeIDP struct {
 	srv *httptest.Server
 	key *ecdsa.PrivateKey
 }
 
-func newFakeIdP(t *testing.T) *fakeIdP { return newFakeIdPOver(t, false) }
+func newFakeIDP(t *testing.T) *fakeIDP { return newFakeIDPOver(t, false) }
 
-// newFakeIdPOver is newFakeIdP, over https with a certificate of its own with useTLS.
-func newFakeIdPOver(t *testing.T, useTLS bool) *fakeIdP {
+// newFakeIDPOver is newFakeIDP, over https with a certificate of its own with useTLS.
+func newFakeIDPOver(t *testing.T, useTLS bool) *fakeIDP {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := &fakeIdP{key: key}
+	p := &fakeIDP{key: key}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"issuer": p.srv.URL, "jwks_uri": p.srv.URL + "/jwks"})
@@ -59,7 +59,7 @@ func newFakeIdPOver(t *testing.T, useTLS bool) *fakeIdP {
 }
 
 // token signs an access token for the admin API with claims added to (or replacing) the usual ones.
-func (p *fakeIdP) token(t *testing.T, claims jwt.MapClaims) string {
+func (p *fakeIDP) token(t *testing.T, claims jwt.MapClaims) string {
 	t.Helper()
 	c := jwt.MapClaims{"iss": p.srv.URL, "aud": []string{"c_admin", adminAudience}, "sub": "user-1", "client_id": "c_admin",
 		"exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Unix()}
@@ -85,7 +85,7 @@ func details(ds ...map[string]any) jwt.MapClaims {
 	return jwt.MapClaims{"authorization_details": out}
 }
 
-func idpSettings(t *testing.T, p *fakeIdP) Settings {
+func idpSettings(t *testing.T, p *fakeIDP) Settings {
 	s := adminSettings(t, "")
 	s.AdminIssuer, s.AdminAudience, s.InsecureKeyURLs = p.srv.URL, adminAudience, true
 	return s
@@ -94,7 +94,7 @@ func idpSettings(t *testing.T, p *fakeIdP) Settings {
 // The admin API takes the IdP's tokens beside the static one: what a token may do (read, write, which tenants)
 // comes from its admin authorization details, each a rule of its own.
 func TestAdminAPIIdPTokens(t *testing.T) {
-	p := newFakeIdP(t)
+	p := newFakeIDP(t)
 	n := startNode(t, idpSettings(t, p))
 	alpha, bravo := newTN(t, "alpha", false, false), newTN(t, "bravo", false, false)
 	expect := func(tok, method, path string, body any, want int) {
@@ -133,7 +133,7 @@ func TestAdminAPIIdPTokens(t *testing.T) {
 	expect(p.token(t, details(map[string]any{"actions": []string{"delete"}})), "GET", "/api/tenants", nil, 403)
 	expect(p.token(t, jwt.MapClaims{"aud": []string{"https://other.test/api"}}), "GET", "/api/tenants", nil, 401)
 	expect(p.token(t, jwt.MapClaims{"exp": time.Now().Add(-time.Minute).Unix()}), "GET", "/api/tenants", nil, 401)
-	expect(newFakeIdP(t).token(t, details(map[string]any{"actions": []string{"write"}})), "GET", "/api/tenants", nil, 401) // another key
+	expect(newFakeIDP(t).token(t, details(map[string]any{"actions": []string{"write"}})), "GET", "/api/tenants", nil, 401) // another key
 
 	// The static token still does anything.
 	expect(apiToken, "DELETE", "/api/tenants/bravo", nil, 204)
@@ -141,7 +141,7 @@ func TestAdminAPIIdPTokens(t *testing.T) {
 
 // Without a static token, only the IdP's tokens are taken; --admin-scope gives full access to a token with it.
 func TestAdminAPIIdPOnlyAndScope(t *testing.T) {
-	p := newFakeIdP(t)
+	p := newFakeIDP(t)
 	s := idpSettings(t, p)
 	s.APIToken, s.AdminScope = "", "gossiper:admin"
 	n := startNode(t, s)
@@ -182,7 +182,7 @@ func TestAdminIdPSettings(t *testing.T) {
 // An identity provider over https with a certificate the system does not trust: refused, but taken with its
 // certificate in --key-urls-ca-file, or with --allow-insecure-key-urls.
 func TestAdminIdPCertificate(t *testing.T) {
-	p := newFakeIdPOver(t, true)
+	p := newFakeIDPOver(t, true)
 	caFile := filepath.Join(t.TempDir(), "ca.pem")
 	if err := os.WriteFile(caFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: p.srv.Certificate().Raw}), 0o600); err != nil {
 		t.Fatal(err)

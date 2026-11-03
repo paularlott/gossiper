@@ -22,7 +22,7 @@ cd "$work/mercure/conformance-tests"
 npm ci --silent
 npx playwright install >/dev/null
 
-"$bin" serve --listen "127.0.0.1:$port" --anonymous --log-level warn \
+"$bin" serve --listen "127.0.0.1:$port" --http-only --anonymous --log-level warn \
   --publisher-key '!ChangeThisMercureHubJWTSecretKey!' \
   --resource-identifier https://localhost/.well-known/mercure &
 hub=$!

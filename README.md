@@ -23,20 +23,20 @@ Gossiper is a clustered, multi-tenant [Mercure](https://datatracker.ietf.org/doc
 go install github.com/paularlott/gossiper/cmd/gossiper@latest
 
 export MERCURE_PUBLISHER_JWT_KEY=$(gossiper genkey)
-gossiper serve --anonymous
+gossiper serve --anonymous --tls-dir tls
 ```
 
-Subscribe in one terminal:
+It serves HTTPS with a self-signed certificate, kept in `tls/self-signed.crt`. Subscribe in one terminal:
 
 ```bash
-curl -N 'http://localhost:8080/.well-known/mercure?match_urlpattern=https://example.com/books/:id'
+curl -N --cacert tls/self-signed.crt 'https://localhost:8080/.well-known/mercure?match_urlpattern=https://example.com/books/:id'
 ```
 
 Publish from another:
 
 ```bash
 TOKEN=$(gossiper token --modern --publish '*')
-curl -X POST http://localhost:8080/.well-known/mercure \
+curl -X POST --cacert tls/self-signed.crt https://localhost:8080/.well-known/mercure \
   -H "Authorization: Bearer $TOKEN" \
   -d topic=https://example.com/books/1 -d data='{"title":"Dune"}'
 ```
@@ -48,17 +48,19 @@ id: urn:uuid:01a18db6-b5d2-7b4c-803a-a49ec7ab1196
 data: {"title":"Dune"}
 ```
 
-`gossiper token` mints test tokens: Mercure 1.0 access tokens with `--modern` (issuer `https://localhost`, audience `http://localhost:8080/.well-known/mercure` unless you pass `--issuer` and `--audience`), draft-07 tokens without it. `task run-server` starts a development node with a tenant at `localhost`, the admin API and its reference.
+`gossiper token` mints test tokens: Mercure 1.0 access tokens with `--modern` (issuer `https://localhost`, audience `https://localhost:8080/.well-known/mercure` unless you pass `--issuer` and `--audience`), draft-07 tokens without it. `task run-server` starts a development node with a tenant at `localhost`, the admin API and its reference.
 
 ## Using it with Symfony, API Platform or FrankenPHP
 
 Point the application at Gossiper instead of a bundled hub:
 
 ```dotenv
-MERCURE_URL=http://gossiper:8080/.well-known/mercure
+MERCURE_URL=https://gossiper:8080/.well-known/mercure
 MERCURE_PUBLIC_URL=https://example.com/.well-known/mercure
 MERCURE_JWT_SECRET=<the same value as MERCURE_PUBLISHER_JWT_KEY>
 ```
+
+The application must trust Gossiper's certificate: its own (`--tls-cert`), or the self-signed one with `--tls-hosts gossiper` and its file as the HTTP client's `cafile`. On a private network, `--http-only` and an `http://` URL also work.
 
 Gossiper reads FrankenPHP's environment variables: `MERCURE_PUBLISHER_JWT_KEY`, `MERCURE_SUBSCRIBER_JWT_KEY`, `MERCURE_PUBLISHER_JWT_ALG`, `MERCURE_SUBSCRIBER_JWT_ALG`, `MERCURE_TRUSTED_ISSUERS`, `MERCURE_RESOURCE_IDENTIFIER`, and from `MERCURE_EXTRA_DIRECTIVES` the directives `anonymous`, `subscriptions`, `cors_origins`, `publish_origins`, `cookie_name`, `heartbeat` and `write_timeout` (others, such as `playground`, are logged and ignored: Gossiper has no debugging UI; `gossiper token --modern` stands in for `mercure-token --dev`).
 
@@ -117,7 +119,8 @@ for ev := range sub.Events() {
 }
 ```
 
-- **Bypassing the proxy:** a service inside the cluster can talk to a node directly, with `URL` the node's address and `Host` the host name the hub (a tenant's) is reached at: `client.Options{URL: "http://10.0.0.5:8080/.well-known/mercure", Host: "events.example"}`. With `CleartextHTTP2` the publish stream and every subscription share one connection.
+- **TLS:** `CAFile` trusts a hub's certificate beside the system's (a private CA, or a node's `self-signed.crt`); `InsecureSkipVerify` takes any certificate, for development only.
+- **Bypassing the proxy:** a service inside the cluster can talk to a node directly, with `URL` the node's address and `Host` the host name the hub (a tenant's) is reached at: `client.Options{URL: "https://10.0.0.5:8080/.well-known/mercure", Host: "events.example", CAFile: "node.crt"}`. To a node with `--http-only`, `CleartextHTTP2` makes the publish stream and every subscription share one connection, as HTTPS does by itself.
 - **Order:** a client's publishes keep their order, resends included.
 - **Subscriptions** reconnect by themselves and resume from their last event ID: after a lost connection, a node shutting down, or an expired token (`TokenFunc` supplies fresh ones). One the hub refuses for good (401 even with a fresh token, 403, 404) ends, and `Err` says why.
 - **The publish stream** reopens by itself and sends again, first and in order, what its hub did not take. A stream that cannot open is retried with a growing delay (up to 10s); HTTP/2 pings, and 30s of silence while answers are due, catch a dead connection.
@@ -234,7 +237,7 @@ A subscriber that reconnects with `Last-Event-ID` gets what it missed from the n
 ## Running in production
 
 - Set the keys (32 bytes or more for HMAC), `--hub-url` or `--resource-identifier`, and `--cluster-key` when clustering.
-- Terminate TLS in front (or `--tls-cert`/`--tls-key`), and set `--trust-forwarded-proto` behind a proxy.
+- Give the nodes a real certificate with `--tls-cert`/`--tls-key`, or terminate TLS in a proxy and run them with `--http-only` on the private network, with `--trust-forwarded-proto` ([TLS](#tls)).
 - Bound what clients can hold: `--max-subscribers` (per node) and `--max-subscribers-per-ip`, `--max-hub-subscribers` (per tenant), `--max-publish-size`, the history settings, and with many tenants `--history-budget`.
 - Behind a load balancer, set `--shutdown-delay` (a few seconds) so it sees `/readyz` fail before the listeners close.
 - Keep the admin API, its reference and the metrics off the public port with `--admin-listen` (for example `127.0.0.1:9090`, or an internal address); without it they share `--listen`, and `--pprof` refuses to start. Behind a proxy, list it in `--trusted-proxies` so the limits on failed admin logins and on streams per address count each client, not the proxy. The admin API checks at most four `--api-token` bcrypt hashes at once (429 beyond).
@@ -242,6 +245,17 @@ A subscriber that reconnects with `Last-Event-ID` gets what it missed from the n
 - Keep the history across restarts with `--history-db` (in the container, under `/data`).
 - Scrape `--metrics` and watch `gossiper_dropped_subscribers_total`, `gossiper_replication_dropped_total`, `gossiper_refused_total` (clock skew between nodes), `gossiper_key_sets_failing`, `gossiper_history_bytes` and `gossiper_history_unwritten_total` (updates the disk could not keep up with).
 - Point health checks at `/readyz`: 503 while a node copies a peer's history, and while it shuts down. The container image runs `gossiper healthcheck` and keeps state in `/data`.
+
+### TLS
+
+Gossiper serves HTTPS (HTTP/2 included) unless `--http-only`:
+
+- **`--tls-cert` and `--tls-key`:** your certificate. Renewed files (certbot, cert-manager) are picked up within an hour, or at once on `SIGHUP`; a pair that does not load leaves the current one in use.
+- **Otherwise, a self-signed certificate** for `localhost`, the loopback addresses, the machine's host name, the hosts of `--listen`, `--admin-listen`, `--hub-url` and `--cluster-advertise`, and any `--tls-hosts`. With `--tls-dir` it is kept there as `self-signed.crt` (the container image keeps it in `/data/tls`), made again when missing, within 30 days of expiry, or not covering a host it should. Without `--tls-dir` it is made at each start. The startup log gives its SHA-256 fingerprint.
+- **Clients** trust the self-signed certificate with its file as a CA file (`curl --cacert`, the Go client's `CAFile`), or skip verification (`curl -k`, `InsecureSkipVerify`) in development. In a cluster each node has its own: give clients every node's file, or use a real certificate.
+- **`--http-only`:** plain HTTP, and HTTP/2 without TLS to clients that ask for it, behind a proxy that terminates TLS.
+
+`gossiper healthcheck` asks the server of the same settings (`--listen`, `--http-only`) on the loopback address, without checking its certificate.
 
 ### Endpoints
 
@@ -263,10 +277,12 @@ Every setting is a flag, a `GOSSIPER_*` environment variable or a key in `gossip
 
 | Flag | Default | |
 | --- | --- | --- |
-| `--listen` | `:8080` | HTTP address |
+| `--listen` | `:8080` | address (HTTPS unless `--http-only`) |
 | `--admin-listen` | on `--listen` | address of the admin API, its reference, metrics and profiling |
 | `--trusted-proxies` | | proxies (addresses, CIDR ranges) whose `X-Forwarded-For` names the client; set it behind a load balancer |
-| `--tls-cert`, `--tls-key` | | serve HTTPS and HTTP/2 |
+| `--http-only` | off | plain HTTP, behind a proxy that terminates TLS |
+| `--tls-cert`, `--tls-key` | self-signed | the certificate and key served (PEM) |
+| `--tls-dir`, `--tls-hosts` | made at each start | where the self-signed certificate is kept; further names and addresses for it |
 | `--protocol` | `both` | `both`, `modern` (Mercure 1.0) or `legacy` (draft-07) |
 | `--publisher-key`, `--publisher-alg`, `--publisher-jwks-url` | HS256 for a secret | publishers' JWT key: an HMAC secret, a PEM public key (RSA of 2048 bits or more) or a JWK Set URL (public-key algorithms only, unless `--publisher-alg` names an HS one) |
 | `--subscriber-key`, `--subscriber-alg`, `--subscriber-jwks-url` | publisher's | subscribers' JWT key |

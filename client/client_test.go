@@ -4,12 +4,15 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -826,5 +829,53 @@ func TestResendAfterDisconnect(t *testing.T) {
 	}
 	if err := got["urn:plain"]; !errors.Is(err, ErrDisconnected) {
 		t.Errorf("the plain publish: %v, want ErrDisconnected", err)
+	}
+}
+
+// A hub over HTTPS with a certificate the system does not trust (a gossiper hub's self-signed one): refused, but
+// taken with its certificate as CAFile, or with InsecureSkipVerify.
+func TestTLSOptions(t *testing.T) {
+	h, err := gossiper.New(gossiper.Config{PublisherKey: auth.KeyConfig{Key: secret, Algorithm: "HS256"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewUnstartedServer(h)
+	srv.EnableHTTP2 = true
+	srv.StartTLS()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = h.Close(ctx)
+		srv.Close()
+	})
+	caFile := filepath.Join(t.TempDir(), "hub.crt")
+	if err := os.WriteFile(caFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tok := token(t, []string{"*"}, nil, time.Time{})
+	for _, tc := range []struct {
+		name     string
+		ca       string
+		insecure bool
+		ok       bool
+	}{{"untrusted", "", false, false}, {"ca file", caFile, false, true}, {"insecure", "", true, true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := New(Options{URL: srv.URL + "/.well-known/mercure", Token: tok, CAFile: tc.ca, InsecureSkipVerify: tc.insecure})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			_, err = c.Publish(ctx(t), Update{Topics: []string{"https://example.com/tls"}})
+			if (err == nil) != tc.ok {
+				t.Fatalf("publish: %v", err)
+			}
+		})
+	}
+	bad := filepath.Join(t.TempDir(), "none.crt")
+	_ = os.WriteFile(bad, []byte("not a certificate"), 0o600)
+	for _, f := range []string{bad, filepath.Join(t.TempDir(), "missing.crt")} {
+		if _, err := New(Options{URL: srv.URL, CAFile: f}); err == nil {
+			t.Errorf("CA file %s accepted", f)
+		}
 	}
 }

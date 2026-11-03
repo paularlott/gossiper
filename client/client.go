@@ -20,12 +20,14 @@ package client
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"math/rand/v2"
 	"net/http"
 	"net/url"
+	"os"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -78,6 +80,12 @@ type Options struct {
 	CleartextHTTP2 bool
 	// TLSConfig configures TLS for the default HTTP client.
 	TLSConfig *tls.Config
+	// CAFile names PEM certificates the default HTTP client trusts for the hub's, as well as the system's: a private
+	// CA, or a gossiper hub's self-signed certificate (the self-signed.crt of its tls-dir).
+	CAFile string
+	// InsecureSkipVerify makes the default HTTP client take any certificate from the hub, unverified: development
+	// only, as anyone between the client and the hub can then read and change what passes.
+	InsecureSkipVerify bool
 	// Header is added to every request.
 	Header http.Header
 	// MaxInFlight bounds the publishes awaiting the hub's answer; PublishAsync waits for room beyond it. Default 4096.
@@ -189,8 +197,13 @@ func New(o Options) (*Client, error) {
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 	c.done = c.ctx.Done()
 	if c.http == nil {
+		tlsConfig, err := clientTLS(o)
+		if err != nil {
+			c.cancel()
+			return nil, err
+		}
 		tr := http.DefaultTransport.(*http.Transport).Clone()
-		tr.TLSClientConfig = o.TLSConfig
+		tr.TLSClientConfig = tlsConfig
 		tr.MaxIdleConnsPerHost = 64
 		tr.ResponseHeaderTimeout = 30 * time.Second
 		// A connection gone without a word (half-open) is noticed: HTTP/2 pings it once quiet.
@@ -209,6 +222,35 @@ func New(o Options) (*Client, error) {
 	sc.Timeout = 0
 	c.stream = &sc
 	return c, nil
+}
+
+// clientTLS is the default HTTP client's TLS configuration: TLSConfig, with CAFile and InsecureSkipVerify.
+func clientTLS(o Options) (*tls.Config, error) {
+	if o.CAFile == "" && !o.InsecureSkipVerify {
+		return o.TLSConfig, nil
+	}
+	cfg := &tls.Config{}
+	if o.TLSConfig != nil {
+		cfg = o.TLSConfig.Clone()
+	}
+	if o.CAFile != "" {
+		pem, err := os.ReadFile(o.CAFile)
+		if err != nil {
+			return nil, fmt.Errorf("mercure: CA file: %w", err)
+		}
+		pool, err := x509.SystemCertPool()
+		if err != nil {
+			pool = x509.NewCertPool()
+		}
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("mercure: CA file %s: no PEM certificate", o.CAFile)
+		}
+		cfg.RootCAs = pool
+	}
+	if o.InsecureSkipVerify {
+		cfg.InsecureSkipVerify = true //nolint:gosec // asked for, and only then
+	}
+	return cfg, nil
 }
 
 // Close closes the client's subscriptions and publish stream. Publishes awaiting their answer fail.

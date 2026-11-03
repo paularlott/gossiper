@@ -74,7 +74,7 @@ func (k tnKey) sign(t testing.TB, claims jwt.MapClaims, typ string) string {
 	if typ != "" {
 		tok.Header["typ"] = typ
 	}
-	var key any = k.priv
+	key := k.priv
 	if k.secret != "" {
 		key = []byte(k.secret)
 	}

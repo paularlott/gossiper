@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"io"
 	"net"
@@ -156,6 +158,9 @@ func settingCases() []settingCase {
 		{"max-subscribers-per-ip", []string{"20"}, `max_subscribers_per_ip = 20`, "20", "GOSSIPER_MAX_SUBSCRIBERS_PER_IP", func(s *server.Settings) { s.MaxPerIP = 20 }},
 		{"max-hub-subscribers", []string{"30"}, `max_hub_subscribers = 30`, "30", "GOSSIPER_MAX_HUB_SUBSCRIBERS", func(s *server.Settings) { s.MaxHubSubs = 30 }},
 		{"shutdown-delay", []string{"5s"}, `shutdown_delay = "5s"`, "5s", "GOSSIPER_SHUTDOWN_DELAY", func(s *server.Settings) { s.ShutdownDelay = "5s" }},
+		{"http-only", nil, `http_only = true`, "true", "GOSSIPER_HTTP_ONLY", func(s *server.Settings) { s.HTTPOnly = true }},
+		{"tls-dir", []string{"/data/tls"}, `tls_dir = "/data/tls"`, "/data/tls", "GOSSIPER_TLS_DIR", func(s *server.Settings) { s.TLSDir = "/data/tls" }},
+		{"tls-hosts", []string{"hub.internal"}, `tls_hosts = ["hub.internal"]`, "hub.internal", "GOSSIPER_TLS_HOSTS", func(s *server.Settings) { s.TLSHosts = []string{"hub.internal"} }},
 		{"publisher-alg", []string{"RS256"}, `publisher_alg = "RS256"`, "RS256", "GOSSIPER_PUBLISHER_ALG", func(s *server.Settings) { s.PublisherAlg = "RS256" }},
 	}
 }
@@ -275,19 +280,32 @@ func freeAddr(t *testing.T) string {
 	return ln.Addr().String()
 }
 
-// TestServeRunsHTTP runs the real serve command, single node: the hub takes a publish, and SIGTERM shuts it down
-// cleanly.
-func TestServeRunsHTTP(t *testing.T) {
+// TestServeRuns runs the real serve command, single node: HTTPS by default, with a self-signed certificate a client
+// trusts by its file; the hub takes a publish, the health check finds it, and SIGTERM shuts it down cleanly.
+func TestServeRuns(t *testing.T) {
 	httpAddr := freeAddr(t)
+	tlsDir := t.TempDir()
 	done := make(chan error, 1)
 	go func() {
-		_, err := run(t, "serve", "--config", filepath.Join(t.TempDir(), "none.toml"), "--listen", httpAddr,
+		_, err := run(t, "serve", "--config", filepath.Join(t.TempDir(), "none.toml"), "--listen", httpAddr, "--tls-dir", tlsDir,
 			"--publisher-key", "cmd-test-secret-0123456789abcdef", "--anonymous", "--log-level", "error")
 		done <- err
 	}()
+	var hc *http.Client
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		resp, err := http.Get("http://" + httpAddr + "/healthz")
+		if hc == nil {
+			if pem, err := os.ReadFile(filepath.Join(tlsDir, "self-signed.crt")); err == nil {
+				pool := x509.NewCertPool()
+				pool.AppendCertsFromPEM(pem)
+				hc = &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}}}
+			}
+		}
+		var resp *http.Response
+		err := errors.New("no certificate yet")
+		if hc != nil {
+			resp, err = hc.Get("https://" + httpAddr + "/healthz")
+		}
 		if err == nil {
 			resp.Body.Close()
 			break
@@ -297,16 +315,22 @@ func TestServeRunsHTTP(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	req, _ := http.NewRequest(http.MethodPost, "http://"+httpAddr+"/.well-known/mercure", strings.NewReader("topic=t&data=x"))
+	req, _ := http.NewRequest(http.MethodPost, "https://"+httpAddr+"/.well-known/mercure", strings.NewReader("topic=t&data=x"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Authorization", "Bearer "+cmdToken(t, "cmd-test-secret-0123456789abcdef"))
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := hc.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("publish: %s", resp.Status)
+	}
+	if err := checkReady(t.Context(), readyURL(httpAddr, false)); err != nil {
+		t.Errorf("healthcheck of the same settings: %v", err)
+	}
+	if err := checkReady(t.Context(), readyURL(httpAddr, true)); err == nil {
+		t.Error("healthcheck over plain HTTP passed against HTTPS")
 	}
 	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
 		t.Fatal(err)
@@ -330,6 +354,23 @@ func cmdToken(t *testing.T, key string) string {
 		t.Fatal(err)
 	}
 	return s
+}
+
+func TestReadyURL(t *testing.T) {
+	for _, tc := range []struct {
+		listen   string
+		httpOnly bool
+		want     string
+	}{
+		{":8080", false, "https://127.0.0.1:8080/readyz"},
+		{"0.0.0.0:3000", true, "http://127.0.0.1:3000/readyz"},
+		{"[::]:9443", false, "https://127.0.0.1:9443/readyz"},
+		{"", false, "https://127.0.0.1:8080/readyz"},
+	} {
+		if got := readyURL(tc.listen, tc.httpOnly); got != tc.want {
+			t.Errorf("readyURL(%q, %v) = %s, want %s", tc.listen, tc.httpOnly, got, tc.want)
+		}
+	}
 }
 
 func TestHealthcheck(t *testing.T) {

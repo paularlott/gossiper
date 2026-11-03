@@ -26,6 +26,8 @@ x-node: &node
     GOSSIPER_ANONYMOUS: "true"
     GOSSIPER_SUBSCRIPTIONS: "true"
     GOSSIPER_METRICS: "true"
+    # Caddy in front speaks to the nodes over plain HTTP on the compose network; it could terminate TLS for clients.
+    GOSSIPER_HTTP_ONLY: "true"
     # The hub's public URL: Mercure 1.0 tokens are bound to it (and relative topics resolve against it).
     GOSSIPER_HUB_URL: "http://localhost:${GOSSIPER_HTTP_PORT:-8080}/.well-known/mercure"
     GOSSIPER_CLUSTER_BIND: "0.0.0.0:7946"

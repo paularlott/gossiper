@@ -27,9 +27,11 @@ RUN mkdir -p /data
 # Distroless: the static binary, CA certificates, time zones and a nonroot user; no shell, no package manager.
 FROM gcr.io/distroless/static-debian13:nonroot
 COPY --from=build /gossiper /gossiper
-# Writable state: --history-db and --database (tenants), e.g. /data/history.db and /data/tenants.db.
+# Writable state: --history-db and --database (tenants), e.g. /data/history.db and /data/tenants.db, and the
+# self-signed certificate (HTTPS by default; GOSSIPER_HTTP_ONLY=true behind a proxy that terminates TLS).
 COPY --from=build --chown=nonroot:nonroot /data /data
 VOLUME ["/data"]
+ENV GOSSIPER_TLS_DIR=/data/tls
 EXPOSE 8080 7946/tcp 7946/udp
 USER nonroot:nonroot
 HEALTHCHECK --interval=10s --timeout=5s --start-period=10s CMD ["/gossiper", "healthcheck"]

@@ -34,8 +34,6 @@ func checkURL(raw string, allowHTTP bool) (*url.URL, error) {
 	return u, nil
 }
 
-// secureClient returns a copy of base (or a default client) whose redirects
-// are refused unless they stay on https (or http when allowHTTP).
 // KeyURLClient returns an HTTP client for JWK Set and discovery URLs that trusts cas as well as the system's
 // certificate authorities (and, with insecure, any certificate).
 func KeyURLClient(cas *x509.CertPool, insecure bool) *http.Client {
@@ -44,6 +42,8 @@ func KeyURLClient(cas *x509.CertPool, insecure bool) *http.Client {
 	return &http.Client{Timeout: defaultHTTPTimeout, Transport: tr}
 }
 
+// secureClient returns a copy of base (or a default client) whose redirects
+// are refused unless they stay on https (or http when allowHTTP).
 func secureClient(base *http.Client, allowHTTP bool) *http.Client {
 	var c http.Client
 	if base != nil {

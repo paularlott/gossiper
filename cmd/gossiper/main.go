@@ -4,10 +4,12 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -116,8 +118,11 @@ func serveCmd(s *server.Settings) *cli.Command {
 			str("listen", "Address to listen on", &s.Listen),
 			str("admin-listen", "Address of a listener of its own for the admin API, its docs, metrics and profiling (default: on listen)", &s.AdminListen),
 			strs("trusted-proxies", "Proxies (addresses or CIDR ranges) whose X-Forwarded-For header names the client, for the per-address limits (admin API failed logins, streams); set it behind a load balancer", &s.TrustedProxies),
-			str("tls-cert", "TLS certificate file (PEM); with tls-key, serves HTTPS and HTTP/2", &s.TLSCert),
+			boolean("http-only", "Serve plain HTTP (and HTTP/2 without TLS), behind a proxy that terminates TLS; HTTPS otherwise", &s.HTTPOnly),
+			str("tls-cert", "TLS certificate file (PEM), with tls-key; renewed files are picked up within an hour, or at once on SIGHUP (default: a self-signed certificate)", &s.TLSCert),
 			str("tls-key", "TLS private key file (PEM)", &s.TLSKey),
+			str("tls-dir", "Directory the self-signed certificate is kept in, so clients can trust its file (default: a new one at each start)", &s.TLSDir),
+			strs("tls-hosts", "Further host names and addresses for the self-signed certificate (beside localhost, the host name, the listen, hub-url and cluster-advertise hosts)", &s.TLSHosts),
 			boolean("metrics", "Serve Prometheus metrics at /metrics", &s.Metrics),
 			boolean("pprof", "Serve Go profiling at /debug/pprof/ on the admin listener (needs admin-listen; for diagnosis)", &s.Pprof),
 			str("log-level", "Log level: trace, debug, info, warn, error", &s.LogLevel),
@@ -194,6 +199,19 @@ var serve = func(ctx context.Context, s server.Settings) error {
 	log.Info("starting", "version", build.Version, "built", build.Date)
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	defer signal.Stop(hup)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-hup:
+				_ = srv.ReloadCertificate()
+			}
+		}
+	}()
 	return srv.Run(ctx)
 }
 
@@ -215,7 +233,7 @@ func tokenCmd() *cli.Command {
 			&cli.BoolFlag{Name: "modern", Usage: "Mint a Mercure 1.0 (draft-08) at+jwt access token", AssignTo: &modern},
 			&cli.StringFlag{Name: "issuer", Usage: "Mercure 1.0: iss", AssignTo: &issuer, DefaultValue: "https://localhost"},
 			&cli.StringFlag{Name: "audience", Usage: "Mercure 1.0: aud, the hub's resource identifier", AssignTo: &audience,
-				DefaultValue: "http://localhost:8080/.well-known/mercure"},
+				DefaultValue: "https://localhost:8080/.well-known/mercure"},
 			&cli.StringFlag{Name: "match-type", Usage: "Mercure 1.0: matcher type of the grants (exact or urlpattern)", AssignTo: &matchType, DefaultValue: "exact"},
 			&cli.StringFlag{Name: "client-id", Usage: "Mercure 1.0: client_id", AssignTo: &clientID, DefaultValue: "gossiper-cli"},
 		},
@@ -295,32 +313,60 @@ func tokenCmd() *cli.Command {
 	}
 }
 
-// healthcheckCmd checks a running server's readiness, for container health checks (the image has no curl).
+// healthcheckCmd checks a running server's readiness, for container health checks (the image has no curl). Without
+// --url it asks the server of the same settings (listen, http-only) on the loopback address. It sends nothing but
+// the request, so it does not verify the server's certificate (a self-signed one, or one for the public name).
 func healthcheckCmd() *cli.Command {
 	var target string
+	s := server.Defaults()
 	return &cli.Command{
 		Name:  "healthcheck",
-		Usage: "Exit 0 when the server at --url answers ready, 1 otherwise",
-		Flags: []cli.Flag{&cli.StringFlag{Name: "url", Usage: "The readiness URL", AssignTo: &target,
-			DefaultValue: "http://127.0.0.1:8080/readyz"}},
+		Usage: "Exit 0 when the server answers ready, 1 otherwise",
+		Flags: []cli.Flag{
+			&cli.StringFlag{Name: "url", Usage: "The readiness URL (default: from listen and http-only)", AssignTo: &target},
+			str("listen", "The server's listen address", &s.Listen),
+			boolean("http-only", "The server serves plain HTTP", &s.HTTPOnly),
+		},
 		Run: func(ctx context.Context, _ *cli.Command) error {
-			ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-			defer cancel()
-			req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
-			if err != nil {
-				return err
+			if target == "" {
+				target = readyURL(s.Listen, s.HTTPOnly)
 			}
-			resp, err := http.DefaultClient.Do(req)
-			if err != nil {
-				return err
-			}
-			resp.Body.Close()
-			if resp.StatusCode != http.StatusOK {
-				return fmt.Errorf("not ready: %s", resp.Status)
-			}
-			return nil
+			return checkReady(ctx, target)
 		},
 	}
+}
+
+// checkReady asks target, a readiness URL, and returns an error unless it answers 200.
+func checkReady(ctx context.Context, target string) error {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return err
+	}
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // a readiness probe, sending nothing
+	resp, err := (&http.Client{Transport: tr}).Do(req)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("not ready: %s", resp.Status)
+	}
+	return nil
+}
+
+// readyURL is the readiness URL of a server listening on listen: its port on the loopback address.
+func readyURL(listen string, httpOnly bool) string {
+	scheme, port := "https", "8080"
+	if httpOnly {
+		scheme = "http"
+	}
+	if _, p, err := net.SplitHostPort(listen); err == nil && p != "" {
+		port = p
+	}
+	return scheme + "://" + net.JoinHostPort("127.0.0.1", port) + "/readyz"
 }
 
 func genkeyCmd() *cli.Command {

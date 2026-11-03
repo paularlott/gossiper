@@ -21,6 +21,7 @@ services:
     command:
       - serve
       - --listen=:3000
+      - --http-only
       - --publisher-key=compat-secret-compat-secret-0123456789
       - --anonymous
       - --subscriptions
@@ -35,6 +36,7 @@ services:
     command:
       - serve
       - --listen=:3000
+      - --http-only
       - --publisher-key=compat-secret-compat-secret-0123456789
       - --anonymous
       - --subscriptions
@@ -76,6 +78,7 @@ services:
     command:
       - serve
       - --listen=:3000
+      - --http-only
       - --protocol=modern
       - --publisher-key=compat-secret-compat-secret-0123456789
       - --anonymous

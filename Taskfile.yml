@@ -194,7 +194,7 @@ tasks:
       - rm -f THIRD_PARTY_LICENSES.txt
 
   run-server:
-    desc: "Run a single test node on :8080: a Mercure hub at localhost (streaming publish too), the admin API and its docs, metrics"
+    desc: "Run a single test node: a Mercure hub at localhost:8080 (streaming publish too); the admin API and its docs, metrics and profiling on localhost:9090"
     deps: [webassets]
     vars:
       DEV_KEY: dev-publisher-key-not-for-production-0123456789
@@ -202,17 +202,18 @@ tasks:
     cmds:
       - mkdir -p data
       - cmd: |
-          echo "Hub:        http://localhost:8080/.well-known/mercure   (tenant \"dev\", examples/dev/tenants.json)"
+          echo "Hub:        https://localhost:8080/.well-known/mercure   (tenant \"dev\", examples/dev/tenants.json)"
           echo "Token:      go run {{.MAIN}} token --key {{.DEV_KEY}} --publish '*' --subscribe '*'"
-          echo "Admin API:  curl -H 'Authorization: Bearer {{.API_TOKEN}}' http://localhost:8080/api/tenants"
-          echo "API docs:   http://localhost:8080/api-docs/"
-          echo "Metrics:    http://localhost:8080/metrics"
-          echo "Database:   data/dev.db (delete it to start over)"
+          echo "Admin API:  curl --cacert data/tls/self-signed.crt -H 'Authorization: Bearer {{.API_TOKEN}}' https://localhost:9090/api/tenants"
+          echo "API docs:   https://localhost:9090/api-docs/   (accept the self-signed certificate)"
+          echo "Metrics:    https://localhost:9090/metrics"
+          echo "Profiling:  https://localhost:9090/debug/pprof/"
+          echo "Database:   data/dev.db (delete it to start over); certificate: data/tls/self-signed.crt"
         silent: true
       - >-
-        go run {{.MAIN}} serve --log-level=debug --metrics --pprof
+        go run {{.MAIN}} serve --log-level=debug --metrics --pprof --admin-listen localhost:9090
         --tenants-file examples/dev/tenants.json
-        --database data/dev.db --api-token {{.API_TOKEN}}
+        --database data/dev.db --api-token {{.API_TOKEN}} --tls-dir data/tls
     ignore_error: true
 
   container:
