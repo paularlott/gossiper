@@ -24,9 +24,11 @@ jobs:
       - name: Format
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
       - name: Vet
-        run: go vet ./...
+        run: go vet ./... && (cd client && go vet ./...)
       - name: Test
         run: go test -race -count=1 -cover ./...
+      - name: Test the client module (against the hub, run as a process)
+        run: cd client && go test -race -count=1 -cover ./...
 
   compat:
     runs-on: ubuntu-latest

@@ -18,10 +18,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/golang-jwt/jwt/v5"
-	"github.com/paularlott/gossiper"
-	"github.com/paularlott/gossiper/auth"
 )
 
 const secret = "client-test-secret-0123456789abcdef0123"
@@ -51,65 +47,6 @@ func (l *conns) drop() {
 		c.Close()
 	}
 	l.cs = nil
-}
-
-// hub runs a hub over HTTP until the test ends; mod adjusts its configuration. drop closes its connections.
-func hub(t *testing.T, mod func(*gossiper.Config)) (h *gossiper.Hub, srv *httptest.Server, drop func()) {
-	t.Helper()
-	return hubWith(t, mod, nil)
-}
-
-// hubWith is hub with wrap around the hub's handler, and a server that also speaks HTTP/2 without TLS.
-func hubWith(t *testing.T, mod func(*gossiper.Config), wrap func(http.Handler) http.Handler) (h *gossiper.Hub, srv *httptest.Server, drop func()) {
-	t.Helper()
-	cfg := gossiper.Config{PublisherKey: auth.KeyConfig{Key: secret, Algorithm: "HS256"}, Protocol: gossiper.ProtocolBoth}
-	if mod != nil {
-		mod(&cfg)
-	}
-	h, err := gossiper.New(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var handler http.Handler = h
-	if wrap != nil {
-		handler = wrap(h)
-	}
-	srv = httptest.NewUnstartedServer(handler)
-	srv.Config.Protocols = new(http.Protocols)
-	srv.Config.Protocols.SetHTTP1(true)
-	srv.Config.Protocols.SetUnencryptedHTTP2(true)
-	l := &conns{Listener: srv.Listener}
-	srv.Listener = l
-	srv.Start()
-	t.Cleanup(func() {
-		l.drop()
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = h.Close(ctx)
-		srv.Close()
-	})
-	return h, srv, l.drop
-}
-
-// token is a draft-07 token granting pub and sub; exp, if not zero, is its expiry.
-func token(t testing.TB, pub, sub []string, exp time.Time) string {
-	t.Helper()
-	m := map[string]any{}
-	if pub != nil {
-		m["publish"] = pub
-	}
-	if sub != nil {
-		m["subscribe"] = sub
-	}
-	claims := jwt.MapClaims{"mercure": m}
-	if !exp.IsZero() {
-		claims["exp"] = exp.Unix()
-	}
-	s, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(secret))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return s
 }
 
 func all(t testing.TB) string { return token(t, []string{"*"}, []string{"*"}, time.Time{}) }
@@ -176,7 +113,7 @@ func TestPublishSubscribe(t *testing.T) {
 			if !tc.streams {
 				wrap = noStreams
 			}
-			_, srv, _ := hubWith(t, nil, wrap)
+			_, srv, _ := hubWith(t, wrap)
 			c := newClient(t, Options{URL: srv.URL + "/.well-known/mercure", Token: all(t), Transport: tc.transport, CleartextHTTP2: tc.h2c})
 			sub, err := c.Subscribe(ctx(t), Subscribe{Topics: []string{"https://example.com/books/{id}"}})
 			if err != nil {
@@ -217,7 +154,7 @@ func TestPublishSubscribe(t *testing.T) {
 // By default the client publishes with a POST per update, even to a gossiper hub that offers streams.
 func TestDefaultPostPerUpdate(t *testing.T) {
 	var forms, streams atomic.Int64
-	_, srv, _ := hubWith(t, nil, func(h http.Handler) http.Handler {
+	_, srv, _ := hubWith(t, func(h http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Method == http.MethodPost {
 				if strings.HasPrefix(r.Header.Get("Content-Type"), ndjson) {
@@ -246,7 +183,7 @@ func TestDefaultPostPerUpdate(t *testing.T) {
 func TestErrors(t *testing.T) {
 	for _, tr := range []Transport{Stream, HTTP} {
 		t.Run(tr.String(), func(t *testing.T) {
-			_, srv, _ := hub(t, nil)
+			_, srv, _ := hub(t)
 			url := srv.URL + "/.well-known/mercure"
 			narrow := newClient(t, Options{URL: url, Token: token(t, []string{"https://example.com/mine"}, []string{"https://example.com/mine"}, time.Time{}), Transport: tr})
 			_, err := narrow.Publish(ctx(t), Update{Topics: []string{"https://example.com/other"}})
@@ -275,7 +212,7 @@ func TestErrors(t *testing.T) {
 
 // Private updates reach only the subscribers allowed their topic.
 func TestPrivateUpdates(t *testing.T) {
-	_, srv, _ := hub(t, func(c *gossiper.Config) { c.Anonymous = true })
+	_, srv, _ := hub(t, "--anonymous")
 	url := srv.URL + "/.well-known/mercure"
 	pub := newClient(t, Options{URL: url, Token: all(t)})
 	var subs []*Subscription
@@ -307,7 +244,7 @@ func TestPrivateUpdates(t *testing.T) {
 
 // PublishAsync pipelines publishes on one stream: they arrive, all of them, in order.
 func TestPublishAsyncOrdered(t *testing.T) {
-	_, srv, _ := hub(t, func(c *gossiper.Config) { c.HistorySize = 100000 })
+	_, srv, _ := hub(t, "--history-size", "100000")
 	c := newClient(t, Options{URL: srv.URL + "/.well-known/mercure", Token: all(t), MaxInFlight: 256, Transport: Stream})
 	sub, err := c.Subscribe(ctx(t), Subscribe{Topics: []string{"https://example.com/n"}, Buffer: 20000})
 	if err != nil {
@@ -343,7 +280,7 @@ func TestPublishAsyncOrdered(t *testing.T) {
 func TestResume(t *testing.T) {
 	for _, tr := range []Transport{Stream, HTTP} {
 		t.Run(tr.String(), func(t *testing.T) {
-			_, srv, drop := hub(t, nil)
+			_, srv, drop := hub(t)
 			url := srv.URL + "/.well-known/mercure"
 			pub := newClient(t, Options{URL: url, Token: all(t), Transport: HTTP})
 			var ids []string
@@ -393,7 +330,7 @@ func TestResume(t *testing.T) {
 
 // A reader that falls a full buffer behind misses nothing: the stream waits for it.
 func TestSlowReader(t *testing.T) {
-	_, srv, _ := hub(t, nil)
+	_, srv, _ := hub(t)
 	c := newClient(t, Options{URL: srv.URL + "/.well-known/mercure", Token: all(t), Transport: Stream})
 	sub, err := c.Subscribe(ctx(t), Subscribe{Topics: []string{"https://example.com/s"}, Buffer: 4})
 	if err != nil {
@@ -418,7 +355,7 @@ func TestSlowReader(t *testing.T) {
 // The hub ends a publish stream when its token expires; with TokenFunc the client opens another with a new token, and
 // sends it the publishes the hub did not take.
 func TestTokenExpiry(t *testing.T) {
-	_, srv, _ := hub(t, nil)
+	_, srv, _ := hub(t)
 	var issued atomic.Int64
 	c := newClient(t, Options{URL: srv.URL + "/.well-known/mercure", Transport: Stream, TokenFunc: func(context.Context) (string, error) {
 		if issued.Add(1) == 1 { // the first expires soon; the one that replaces it lasts
@@ -446,7 +383,7 @@ func TestTokenExpiry(t *testing.T) {
 }
 
 func TestClose(t *testing.T) {
-	_, srv, _ := hub(t, nil)
+	_, srv, _ := hub(t)
 	c, err := New(Options{URL: srv.URL + "/.well-known/mercure", Token: all(t)})
 	if err != nil {
 		t.Fatal(err)
@@ -475,7 +412,7 @@ func TestClose(t *testing.T) {
 // A publish the hub refuses fails alone: the client goes on publishing (a line over the hub's limit ends its stream,
 // and the next publish opens another).
 func TestRefusedLocally(t *testing.T) {
-	_, srv, _ := hub(t, func(c *gossiper.Config) { c.MaxPublishBytes = 64 << 10 })
+	_, srv, _ := hub(t, "--max-publish-size", "65536")
 	c := newClient(t, Options{URL: srv.URL + "/.well-known/mercure", Token: all(t), Transport: Stream})
 	sub, err := c.Subscribe(ctx(t), Subscribe{Topics: []string{"https://example.com/l"}})
 	if err != nil {
@@ -500,7 +437,7 @@ func TestRefusedLocally(t *testing.T) {
 func TestHost(t *testing.T) {
 	var mu sync.Mutex
 	hosts := map[string]bool{}
-	_, srv, _ := hubWith(t, nil, func(h http.Handler) http.Handler {
+	_, srv, _ := hubWith(t, func(h http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			mu.Lock()
 			hosts[r.Method+" "+r.Host] = true
@@ -800,7 +737,7 @@ func TestSubscriptionRefused(t *testing.T) {
 func TestReplicas(t *testing.T) {
 	for _, tr := range []Transport{Stream, HTTP} {
 		t.Run(tr.String(), func(t *testing.T) {
-			h, srv, _ := hubWith(t, nil, nil)
+			h, srv, _ := hub(t)
 			c, err := New(Options{URL: srv.URL + "/.well-known/mercure", Token: token(t, []string{"*"}, nil, time.Time{}), Transport: tr})
 			if err != nil {
 				t.Fatal(err)
@@ -820,7 +757,7 @@ func TestReplicas(t *testing.T) {
 					t.Fatalf("1 copy with an ID: %q %v", got, err)
 				}
 			}
-			if n := h.Stats().Duplicates; n != 1 {
+			if n := h.duplicates(t); n != 1 {
 				t.Errorf("%d duplicates, want 1", n)
 			}
 		})
@@ -866,19 +803,10 @@ func TestResendAfterDisconnect(t *testing.T) {
 // A hub over HTTPS with a certificate the system does not trust (a gossiper hub's self-signed one): refused, but
 // taken with its certificate as CAFile, or with InsecureSkipVerify.
 func TestTLSOptions(t *testing.T) {
-	h, err := gossiper.New(gossiper.Config{PublisherKey: auth.KeyConfig{Key: secret, Algorithm: "HS256"}, Protocol: gossiper.ProtocolBoth})
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv := httptest.NewUnstartedServer(h)
+	srv := httptest.NewUnstartedServer(forward(t, startHub(t, nil).direct))
 	srv.EnableHTTP2 = true
 	srv.StartTLS()
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = h.Close(ctx)
-		srv.Close()
-	})
+	t.Cleanup(srv.Close)
 	caFile := filepath.Join(t.TempDir(), "hub.crt")
 	if err := os.WriteFile(caFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}), 0o600); err != nil {
 		t.Fatal(err)

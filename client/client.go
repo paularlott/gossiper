@@ -16,6 +16,10 @@
 //
 // A service inside the cluster can bypass the proxy and reach a node directly: URL is the node's address and Host the
 // host name the hub (a tenant's) is reached at, as the proxy would have asked for it.
+//
+// The client is a module of its own (github.com/paularlott/gossiper/client), needing nothing beyond the standard
+// library, so a program that only publishes and subscribes does not depend on the hub. Its tests run the hub from
+// this repository as a process.
 package client
 
 import (

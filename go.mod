@@ -2,11 +2,16 @@ module github.com/paularlott/gossiper
 
 go 1.27.3
 
+// The client is a module of its own, so programs that only publish and
+// subscribe do not depend on the hub. Until it is tagged, use this copy.
+replace github.com/paularlott/gossiper/client => ./client
+
 require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/paularlott/cli v0.10.2
 	github.com/paularlott/gossip v0.30.3
+	github.com/paularlott/gossiper/client v0.0.0-00010101000000-000000000000
 	github.com/paularlott/logger v0.4.0
 	github.com/shamaton/msgpack/v3 v3.2.7
 	go.yaml.in/yaml/v3 v3.0.5

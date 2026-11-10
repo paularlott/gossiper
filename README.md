@@ -104,7 +104,11 @@ Mercure's HTTP protocol costs a request per publish, which caps a busy service a
 
 It is the same hub, with the same tokens, grants, topics, private updates and history. Mercure clients never send this content type, so they are unaffected.
 
-The [Go client](client) publishes with a POST per update by default, which any Mercure hub takes, or over a stream to a gossiper hub with `Transport: client.Stream` (`client.Auto` streams to a gossiper hub and POSTs to any other), and subscribes with Server-Sent Events, with the same calls:
+The [Go client](client) publishes with a POST per update by default, which any Mercure hub takes, or over a stream to a gossiper hub with `Transport: client.Stream` (`client.Auto` streams to a gossiper hub and POSTs to any other), and subscribes with Server-Sent Events, with the same calls. It is a module of its own that depends on nothing beyond Go's standard library, so a service that only publishes and subscribes does not take on the hub:
+
+```sh
+go get github.com/paularlott/gossiper/client
+```
 
 ```go
 c, err := client.New(client.Options{URL: "https://events.example/.well-known/mercure", Token: jwt, Transport: client.Stream})

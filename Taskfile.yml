@@ -223,14 +223,16 @@ tasks:
       - echo {{.VERSION}}
 
   test:
-    desc: Run the unit and cluster tests
+    desc: Run the unit and cluster tests, and the client module's
     cmds:
       - go test ./...
+      - cd client && go test ./...
 
   test:race:
-    desc: Run the unit and cluster tests with the race detector
+    desc: Run the unit and cluster tests, and the client module's, with the race detector
     cmds:
       - go test -race -count=1 ./...
+      - cd client && go test -race -count=1 ./...
 
   test:compat:
     desc: Run the Mercure compatibility suite (FrankenPHP / Symfony, Docker)
