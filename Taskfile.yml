@@ -116,10 +116,20 @@ tasks:
       GOOS: "{{.GOOS}}"
       GOARCH: "{{.GOARCH}}"
       CGO_ENABLED: "0"
+    # MACOS_SIGN_IDENTITY (see .env.example) signs the macOS binaries for release.
+    dotenv: [".env"]
     cmds:
       - rm -rf {{.STAGE}} {{$.OUTPUT_DIR}}/{{.ZIP_FILE}}
       - mkdir -p {{.STAGE}}
       - go build {{$.BUILD_FLAGS}} -o {{.STAGE}}/{{$.PROJECT_NAME}}{{.EXT}} {{$.MAIN}}
+      - |
+        # Developer ID signature for release: the hardened runtime and a secure
+        # timestamp are required for notarization. Skipped without an identity
+        # (or off macOS), leaving Go's ad-hoc signature.
+        if [ "{{.GOOS}}" = "darwin" ] && [ -n "$MACOS_SIGN_IDENTITY" ] && command -v codesign >/dev/null 2>&1; then
+          codesign --force --timestamp --options runtime --identifier com.paularlott.{{$.PROJECT_NAME}} \
+            --sign "$MACOS_SIGN_IDENTITY" {{.STAGE}}/{{$.PROJECT_NAME}} || exit 1
+        fi
       - cp LICENSE.txt README.md {{.STAGE}}/
       - cd {{.STAGE}} && zip -q ../{{.ZIP_FILE}} {{$.PROJECT_NAME}}{{.EXT}} LICENSE.txt README.md
       - rm -rf {{.STAGE}}
@@ -130,6 +140,77 @@ tasks:
       - web/dist/**/*
     generates:
       - "{{$.OUTPUT_DIR}}/{{.ZIP_FILE}}"
+
+  notarize-macos:
+    desc: Notarize the Developer ID signed macOS binaries in bin/ (NOTARY_* in .env)
+    dotenv: [".env"]
+    cmds:
+      - |
+        if [ -z "$NOTARY_KEY" ] || [ -z "$NOTARY_KEY_ID" ] || [ -z "$NOTARY_ISSUER" ]; then
+          echo "NOTARY_KEY, NOTARY_KEY_ID and NOTARY_ISSUER must be set: see .env.example" >&2
+          exit 1
+        fi
+        key=$NOTARY_KEY
+        case $key in "~/"*) key="$HOME/${key#\~/}" ;; esac
+        if [ ! -f "$key" ]; then
+          echo "Notary API key not found: $key" >&2
+          exit 1
+        fi
+        notary() {
+          xcrun notarytool "$@" --key "$key" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER"
+        }
+
+        stage=$(mktemp -d "${TMPDIR:-/tmp}/{{.PROJECT_NAME}}-notarize.XXXXXX") || exit 1
+        trap 'rm -rf "$stage"' EXIT
+
+        # Unpack each macOS binary from its release zip (with unzip, as users
+        # and Homebrew do) and check it carries a Developer ID signature before
+        # anything is sent to Apple.
+        for arch in amd64 arm64; do
+          zip="{{.OUTPUT_DIR}}/{{.PROJECT_NAME}}_darwin_${arch}.zip"
+          mkdir -p "$stage/unpack/$arch" "$stage/submit/$arch" || exit 1
+          unzip -q "$zip" {{.PROJECT_NAME}} -d "$stage/unpack/$arch" || exit 1
+          bin="$stage/unpack/$arch/{{.PROJECT_NAME}}"
+          if ! codesign -dvv "$bin" 2>&1 | grep -q '^Authority=Developer ID Application'; then
+            echo "$zip is not Developer ID signed: set MACOS_SIGN_IDENTITY in .env and rebuild (task clean all)" >&2
+            exit 1
+          fi
+          cp "$bin" "$stage/submit/$arch/" || exit 1
+        done
+
+        # One submission covers both binaries: notarization is recorded per
+        # binary (by code hash), not per zip, so the release zips need no
+        # change. Bare binaries cannot be stapled; Gatekeeper finds the ticket
+        # online.
+        ditto -c -k --keepParent "$stage/submit" "$stage/submit.zip" || exit 1
+        result=$(notary submit "$stage/submit.zip" --wait --output-format json) || true
+        echo "$result"
+        status=$(echo "$result" | jq -r '.status // empty')
+        if [ "$status" != "Accepted" ]; then
+          id=$(echo "$result" | jq -r '.id // empty')
+          echo "Notarization failed (status: ${status:-unknown})" >&2
+          if [ -n "$id" ]; then notary log "$id" >&2; fi
+          exit 1
+        fi
+
+        # Confirm Apple serves the ticket for the binaries as shipped.
+        for arch in amd64 arm64; do
+          bin="$stage/unpack/$arch/{{.PROJECT_NAME}}"
+          ok=0
+          # A freshly accepted ticket can take a few seconds to be served.
+          for attempt in 1 2 3 4 5 6; do
+            if codesign --verify --strict --check-notarization "$bin" 2>/dev/null; then
+              ok=1
+              break
+            fi
+            sleep 10
+          done
+          if [ "$ok" -ne 1 ]; then
+            echo "The $arch binary is not showing as notarized" >&2
+            exit 1
+          fi
+          echo "notarized: {{.PROJECT_NAME}}_darwin_${arch}"
+        done
 
   checksums:
     desc: Write and show the SHA-256 checksums of the release archives
@@ -267,6 +348,8 @@ tasks:
     cmds:
       - task: test:race
       - task: all
+      # Before anything is tagged or published, so a rejection stops here.
+      - task: notarize-macos
       - task: checksums
       - task: tag
       - task: container
