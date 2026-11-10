@@ -1,11 +1,12 @@
 // Package client is a Go client for Mercure hubs: it publishes updates and subscribes to topics.
 //
-// Against a gossiper hub it publishes over one streaming publish (a long POST of NDJSON, a line an update, answered
-// a line each): it publishes as fast as it writes, without waiting for each answer, many times faster than a POST per
-// update. Against any other Mercure hub it publishes with a POST per update, as Mercure's HTTP protocol does. Either
-// way it subscribes with Server-Sent Events, a stream a subscription that reconnects by itself, resuming from its
-// last event ID. With HTTP/2 (https, or CleartextHTTP2 for a gossiper hub over http) the publish stream and every
-// subscription share one connection.
+// By default it publishes with a POST per update, as Mercure's HTTP protocol does, which any Mercure hub takes. With
+// Transport Stream (or Auto) it publishes to a gossiper hub over one streaming publish instead (a long POST of NDJSON,
+// a line an update, answered a line each): it publishes as fast as it writes, without waiting for each answer, many
+// times faster than a POST per update; Auto falls back to a POST per update with any other Mercure hub. Either way it
+// subscribes with Server-Sent Events, a stream a subscription that reconnects by itself, resuming from its last event
+// ID. With HTTP/2 (https, or CleartextHTTP2 for a gossiper hub over http) the publish stream and every subscription
+// share one connection.
 //
 //	c, _ := client.New(client.Options{URL: "https://example.com/.well-known/mercure", Token: jwt})
 //	defer c.Close()
@@ -37,22 +38,23 @@ import (
 type Transport int
 
 const (
-	// Auto publishes over a stream when the hub offers it (a gossiper hub), and with a POST per update otherwise.
-	Auto Transport = iota
-	// Stream publishes over a stream only.
+	// HTTP publishes with a POST per update, one request a publish, as Mercure's HTTP protocol does: the default,
+	// which any Mercure hub takes.
+	HTTP Transport = iota
+	// Stream publishes over a stream only: one long streaming publish to a gossiper hub carries every update.
 	Stream
-	// HTTP publishes with a POST per update only, as Mercure's HTTP protocol does.
-	HTTP
+	// Auto publishes over a stream when the hub offers it (a gossiper hub), and with a POST per update otherwise.
+	Auto
 )
 
 func (t Transport) String() string {
 	switch t {
 	case Stream:
 		return "stream"
-	case HTTP:
-		return "http"
+	case Auto:
+		return "auto"
 	}
-	return "auto"
+	return "http"
 }
 
 // Options configure a Client.
@@ -68,7 +70,7 @@ type Options struct {
 	// TokenFunc, when set, supplies the token instead, each time the client opens a stream or makes a request: a
 	// token that expires is replaced without a new client.
 	TokenFunc func(ctx context.Context) (string, error)
-	// Transport selects how the client publishes. Default Auto.
+	// Transport selects how the client publishes. Default HTTP: a POST per update.
 	Transport Transport
 	// HTTPClient makes the requests. Default: a client of its own, with a 30s timeout for a POST per update.
 	// Streams (the publish stream, the subscriptions) last as long as they need, whatever its Timeout. Redirects are
@@ -300,7 +302,8 @@ func (c *Client) Close() error {
 	return nil
 }
 
-// Transport reports how the client publishes now: Stream or HTTP (Auto before it first publishes).
+// Transport reports how the client publishes now: Stream or HTTP (Auto, with Transport Auto, before it first
+// publishes).
 func (c *Client) Transport() Transport {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -452,7 +455,8 @@ func (c *Client) Publish(ctx context.Context, u Update) (string, error) {
 // PublishAsync publishes u without waiting for the hub: done, if not nil, is called with the event ID or the error
 // once the hub answers. Over a stream it runs on the goroutine that reads the answers, so it must be quick and must
 // not wait for the client (no Publish in it): until it returns, no other answer is read. Over a stream the publishes
-// of a client keep their order. It waits only when MaxInFlight publishes are awaiting their answer.
+// of a client keep their order; with a POST per update (Transport HTTP, the default) each is a request of its own,
+// and they may reach the hub in any order. It waits only when MaxInFlight publishes are awaiting their answer.
 func (c *Client) PublishAsync(ctx context.Context, u Update, done func(id string, err error)) error {
 	if done == nil {
 		done = func(string, error) {}

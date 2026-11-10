@@ -288,7 +288,7 @@ func TestServeRuns(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		_, err := run(t, "serve", "--config", filepath.Join(t.TempDir(), "none.toml"), "--listen", httpAddr, "--tls-dir", tlsDir,
-			"--publisher-key", "cmd-test-secret-0123456789abcdef", "--anonymous", "--log-level", "error")
+			"--publisher-key", "cmd-test-secret-0123456789abcdef", "--protocol", "both", "--anonymous", "--log-level", "error")
 		done <- err
 	}()
 	var hc *http.Client

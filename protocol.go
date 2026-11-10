@@ -18,9 +18,12 @@ import (
 type Protocol int
 
 const (
+	// ProtocolDefault is the zero value: Mercure 1.0 only, as ProtocolModern, which is what the reference hub
+	// accepts by default. Draft-07 clients need ProtocolBoth (or ProtocolLegacy).
+	ProtocolDefault Protocol = iota
 	// ProtocolBoth accepts both revisions at once: draft-07 tokens, topic selectors and parameters, and Mercure
 	// 1.0 (draft-08) access tokens and matchers. Each request, token and subscription is read in its own revision.
-	ProtocolBoth Protocol = iota
+	ProtocolBoth
 	// ProtocolLegacy accepts only draft-07: the mercure claim, the topic parameter, the authorization query
 	// parameter and the mercureAuthorization cookie.
 	ProtocolLegacy
@@ -29,20 +32,20 @@ const (
 	ProtocolModern
 )
 
-// ParseProtocol parses "both", "legacy" (or "07") and "modern" (or "1.0", "08").
+// ParseProtocol parses "modern" (or "1.0", "08"; and "", the default), "both" and "legacy" (or "07").
 func ParseProtocol(s string) (Protocol, error) {
 	switch strings.ToLower(s) {
-	case "", "both":
+	case "both":
 		return ProtocolBoth, nil
 	case "legacy", "07", "draft-07":
 		return ProtocolLegacy, nil
-	case "modern", "1.0", "1", "08", "draft-08":
+	case "", "modern", "1.0", "1", "08", "draft-08":
 		return ProtocolModern, nil
 	}
-	return 0, errors.New("gossiper: protocol must be both, legacy or modern")
+	return 0, errors.New("gossiper: protocol must be modern, both or legacy")
 }
 
-func (p Protocol) legacy() bool { return p != ProtocolModern }
+func (p Protocol) legacy() bool { return p == ProtocolBoth || p == ProtocolLegacy }
 func (p Protocol) modern() bool { return p != ProtocolLegacy }
 
 // matchKind is how a topic matcher is read.

@@ -75,7 +75,7 @@ func newTenantNode(t *testing.T) *tenantNode {
 // liveTenant is a tenant with an HS256 key of its own.
 func liveTenant(name string) gossiper.Tenant {
 	return gossiper.Tenant{Name: name, Hosts: []string{name + ".test"}, Config: gossiper.Config{
-		PublisherKey: auth.KeyConfig{Key: name + "-" + testSecret}, Subscriptions: true, Heartbeat: -1,
+		PublisherKey: auth.KeyConfig{Key: name + "-" + testSecret}, Protocol: gossiper.ProtocolBoth, Subscriptions: true, Heartbeat: -1,
 	}}
 }
 

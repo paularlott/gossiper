@@ -62,7 +62,7 @@ func hub(t *testing.T, mod func(*gossiper.Config)) (h *gossiper.Hub, srv *httpte
 // hubWith is hub with wrap around the hub's handler, and a server that also speaks HTTP/2 without TLS.
 func hubWith(t *testing.T, mod func(*gossiper.Config), wrap func(http.Handler) http.Handler) (h *gossiper.Hub, srv *httptest.Server, drop func()) {
 	t.Helper()
-	cfg := gossiper.Config{PublisherKey: auth.KeyConfig{Key: secret, Algorithm: "HS256"}}
+	cfg := gossiper.Config{PublisherKey: auth.KeyConfig{Key: secret, Algorithm: "HS256"}, Protocol: gossiper.ProtocolBoth}
 	if mod != nil {
 		mod(&cfg)
 	}
@@ -163,6 +163,8 @@ func TestPublishSubscribe(t *testing.T) {
 		h2c       bool
 		want      Transport
 	}{
+		{"http, hub without streams", HTTP, false, false, HTTP},
+		{"http over HTTP/2", HTTP, true, true, HTTP},
 		{"auto, gossiper hub", Auto, true, false, Stream},
 		{"auto, gossiper hub over HTTP/2", Auto, true, true, Stream},
 		{"auto, hub without streams", Auto, false, false, HTTP},
@@ -209,6 +211,35 @@ func TestPublishSubscribe(t *testing.T) {
 				t.Errorf("closed subscription: %v", sub.Err())
 			}
 		})
+	}
+}
+
+// By default the client publishes with a POST per update, even to a gossiper hub that offers streams.
+func TestDefaultPostPerUpdate(t *testing.T) {
+	var forms, streams atomic.Int64
+	_, srv, _ := hubWith(t, nil, func(h http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPost {
+				if strings.HasPrefix(r.Header.Get("Content-Type"), ndjson) {
+					streams.Add(1)
+				} else {
+					forms.Add(1)
+				}
+			}
+			h.ServeHTTP(w, r)
+		})
+	})
+	if (Options{}).Transport != HTTP || HTTP.String() != "http" {
+		t.Fatalf("default transport %v", Options{}.Transport)
+	}
+	c := newClient(t, Options{URL: srv.URL + "/.well-known/mercure", Token: all(t)})
+	for i := range 3 {
+		if _, err := c.Publish(ctx(t), Update{Topics: []string{"https://example.com/d"}, Data: fmt.Sprint(i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if c.Transport() != HTTP || forms.Load() != 3 || streams.Load() != 0 {
+		t.Errorf("transport %v, %d form POSTs, %d streams", c.Transport(), forms.Load(), streams.Load())
 	}
 }
 
@@ -277,7 +308,7 @@ func TestPrivateUpdates(t *testing.T) {
 // PublishAsync pipelines publishes on one stream: they arrive, all of them, in order.
 func TestPublishAsyncOrdered(t *testing.T) {
 	_, srv, _ := hub(t, func(c *gossiper.Config) { c.HistorySize = 100000 })
-	c := newClient(t, Options{URL: srv.URL + "/.well-known/mercure", Token: all(t), MaxInFlight: 256})
+	c := newClient(t, Options{URL: srv.URL + "/.well-known/mercure", Token: all(t), MaxInFlight: 256, Transport: Stream})
 	sub, err := c.Subscribe(ctx(t), Subscribe{Topics: []string{"https://example.com/n"}, Buffer: 20000})
 	if err != nil {
 		t.Fatal(err)
@@ -363,7 +394,7 @@ func TestResume(t *testing.T) {
 // A reader that falls a full buffer behind misses nothing: the stream waits for it.
 func TestSlowReader(t *testing.T) {
 	_, srv, _ := hub(t, nil)
-	c := newClient(t, Options{URL: srv.URL + "/.well-known/mercure", Token: all(t)})
+	c := newClient(t, Options{URL: srv.URL + "/.well-known/mercure", Token: all(t), Transport: Stream})
 	sub, err := c.Subscribe(ctx(t), Subscribe{Topics: []string{"https://example.com/s"}, Buffer: 4})
 	if err != nil {
 		t.Fatal(err)
@@ -694,7 +725,7 @@ func TestAutoOpenTimeout(t *testing.T) {
 		}
 	}))
 	t.Cleanup(srv.Close)
-	c := newClient(t, Options{URL: srv.URL})
+	c := newClient(t, Options{URL: srv.URL, Transport: Auto})
 	c.openTimeout = 300 * time.Millisecond
 	if id, err := c.Publish(ctx(t), Update{Topics: []string{"t"}}); err != nil || id != "urn:form" {
 		t.Fatalf("publish: %q %v", id, err)
@@ -835,7 +866,7 @@ func TestResendAfterDisconnect(t *testing.T) {
 // A hub over HTTPS with a certificate the system does not trust (a gossiper hub's self-signed one): refused, but
 // taken with its certificate as CAFile, or with InsecureSkipVerify.
 func TestTLSOptions(t *testing.T) {
-	h, err := gossiper.New(gossiper.Config{PublisherKey: auth.KeyConfig{Key: secret, Algorithm: "HS256"}})
+	h, err := gossiper.New(gossiper.Config{PublisherKey: auth.KeyConfig{Key: secret, Algorithm: "HS256"}, Protocol: gossiper.ProtocolBoth})
 	if err != nil {
 		t.Fatal(err)
 	}

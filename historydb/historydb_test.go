@@ -139,7 +139,7 @@ func token(t *testing.T) string {
 func TestHubRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "h.db")
 	start := func(s *Store) (*gossiper.Hub, *httptest.Server) {
-		h, err := gossiper.New(gossiper.Config{PublisherKey: auth.KeyConfig{Key: secret}, Anonymous: true, HistoryStore: s, Heartbeat: -1})
+		h, err := gossiper.New(gossiper.Config{PublisherKey: auth.KeyConfig{Key: secret}, Protocol: gossiper.ProtocolBoth, Anonymous: true, HistoryStore: s, Heartbeat: -1})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -200,7 +200,7 @@ func TestHubRestart(t *testing.T) {
 func TestStreamStored(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "h.db")
 	s := open(t, path)
-	h, err := gossiper.New(gossiper.Config{PublisherKey: auth.KeyConfig{Key: secret}, HistoryStore: s, Heartbeat: -1})
+	h, err := gossiper.New(gossiper.Config{PublisherKey: auth.KeyConfig{Key: secret}, Protocol: gossiper.ProtocolBoth, HistoryStore: s, Heartbeat: -1})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -13,7 +13,8 @@ import (
 
 // Config configures a Hub. The zero value of each field selects its default.
 type Config struct {
-	// Protocol selects the protocol revisions accepted. Default ProtocolBoth.
+	// Protocol selects the protocol revisions accepted. Default: Mercure 1.0 only (ProtocolModern), as the
+	// reference hub; ProtocolBoth also takes draft-07 clients.
 	Protocol Protocol
 
 	// PublisherKey verifies publishers' tokens: draft-07 tokens, and Mercure 1.0 access tokens of the trusted
@@ -133,7 +134,7 @@ func (c *Config) withDefaults() (Config, error) {
 	if cfg.AccessTokenCookieName == "" {
 		cfg.AccessTokenCookieName = "__Secure-mercure_access_token"
 	}
-	if cfg.Protocol < ProtocolBoth || cfg.Protocol > ProtocolModern {
+	if cfg.Protocol < ProtocolDefault || cfg.Protocol > ProtocolModern {
 		return cfg, errors.New("gossiper: unknown Protocol")
 	}
 	if cfg.MaxConnectionLifetime < 0 {

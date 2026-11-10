@@ -37,7 +37,7 @@ func TestJWKSOnlyAcceptsRS256(t *testing.T) {
 	defer jwks.Close()
 
 	s := Defaults()
-	s.HTTPOnly = true
+	s.HTTPOnly, s.Protocol = true, "both"
 	s.PublisherJWKS, s.InsecureKeyURLs = jwks.URL, true
 	s.TrustedIssuers = []string{"https://idp.example"}
 	s.ResourceID = "https://hub.example/.well-known/mercure"

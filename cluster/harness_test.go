@@ -178,6 +178,7 @@ func newNode(t testing.TB, o nodeOpts) *testNode {
 	}
 	n.tr = cluster.New(gc, opts)
 	hc := gossiper.Config{
+		Protocol:       gossiper.ProtocolBoth, // the tests speak draft-07
 		PublisherKey:   auth.KeyConfig{Key: testSecret},
 		Anonymous:      true,
 		Heartbeat:      -1,

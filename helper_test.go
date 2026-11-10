@@ -71,6 +71,9 @@ type env struct {
 // and server are closed when the test ends.
 func newEnv(t testing.TB, cfg Config) *env {
 	t.Helper()
+	if cfg.Protocol == ProtocolDefault { // the tests speak draft-07 unless they choose a protocol
+		cfg.Protocol = ProtocolBoth
+	}
 	if !hasKey(cfg.PublisherKey) {
 		cfg.PublisherKey = auth.KeyConfig{Key: testSecret}
 	}

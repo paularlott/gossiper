@@ -203,7 +203,7 @@ tasks:
       - mkdir -p data
       - cmd: |
           echo "Hub:        https://localhost:8080/.well-known/mercure   (tenant \"dev\", examples/dev/tenants.json)"
-          echo "Token:      go run {{.MAIN}} token --key {{.DEV_KEY}} --publish '*' --subscribe '*'"
+          echo "Token:      go run {{.MAIN}} token --modern --key {{.DEV_KEY}} --publish '*' --subscribe '*'"
           echo "Admin API:  curl --cacert data/tls/self-signed.crt -H 'Authorization: Bearer {{.API_TOKEN}}' https://localhost:9090/api/tenants"
           echo "API docs:   https://localhost:9090/api-docs/   (accept the self-signed certificate)"
           echo "Metrics:    https://localhost:9090/metrics"

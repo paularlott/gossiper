@@ -44,6 +44,10 @@ func applyExtraDirectives(s *Settings, directives string, log logger.Logger) {
 			one(&s.Heartbeat, def.Heartbeat)
 		case "write_timeout":
 			one(&s.WriteTimeout, def.WriteTimeout)
+		case "protocol_version_compatibility": // FrankenPHP's draft-07 compatibility: draft-07 beside Mercure 1.0
+			if s.Protocol == def.Protocol {
+				s.Protocol = "both"
+			}
 		default:
 			log.Warn("MERCURE_EXTRA_DIRECTIVES: directive not supported, ignored", "directive", f[0])
 		}

@@ -9,9 +9,9 @@
 
 Gossiper is a clustered, multi-tenant [Mercure](https://datatracker.ietf.org/doc/draft-dunglas-mercure/) hub. A publisher sends an update and every subscriber listening on a matching topic receives it, whichever node of the cluster each is connected to: browsers and services alike over Server-Sent Events, as from any Mercure hub, and services can publish over one long streaming request instead of a request per update.
 
-- **Both protocol revisions.** Mercure 1.0 (draft-08: OAuth access tokens, `match` and URL patterns) and draft-07 (`topic` and URI templates) side by side, so old and new clients share one hub.
-- **Drop-in for Mercure clients.** The Symfony Mercure component, API Platform, FrankenPHP apps, Laravel broadcasters and a plain browser `EventSource`.
-- **Fast for services.** A streaming publish carries a service's updates over one long request, a line each, as fast as it writes them: more than ten times the rate of a POST per update. The [Go client](client) uses it with any gossiper hub, and Mercure's HTTP protocol with any other.
+- **Both protocol revisions.** Mercure 1.0 (draft-08: OAuth access tokens, `match` and URL patterns), the default as with the reference hub, and with `--protocol both` draft-07 (`topic` and URI templates) side by side, so old and new clients share one hub.
+- **Drop-in for Mercure clients.** The Symfony Mercure component, API Platform, FrankenPHP apps, Laravel broadcasters and a plain browser `EventSource` (those still on draft-07 with `--protocol both`).
+- **Fast for services.** A streaming publish carries a service's updates over one long request, a line each, as fast as it writes them: more than ten times the rate of a POST per update. The [Go client](client) uses it when asked (`Transport: client.Stream`, or `client.Auto` to fall back to Mercure's HTTP protocol with other hubs); by default it publishes with a POST per update.
 - **Multi-tenant.** Tenants with hubs and keys of their own, picked by host name, from a file or an admin API, applied live across the cluster.
 - **Clustered with [gossip](https://github.com/paularlott/gossip).** Any number of identical nodes behind a load balancer: no sticky sessions, no Redis.
 - **Copies on demand.** A publish can ask to be answered only once several nodes hold it, and is then idempotent by its ID.
@@ -48,7 +48,7 @@ id: urn:uuid:01a18db6-b5d2-7b4c-803a-a49ec7ab1196
 data: {"title":"Dune"}
 ```
 
-`gossiper token` mints test tokens: Mercure 1.0 access tokens with `--modern` (issuer `https://localhost`, audience `https://localhost:8080/.well-known/mercure` unless you pass `--issuer` and `--audience`), draft-07 tokens without it. `task run-server` starts a development node with a tenant at `localhost`, the admin API and its reference.
+`gossiper token` mints test tokens: Mercure 1.0 access tokens with `--modern` (issuer `https://localhost`, audience `https://localhost:8080/.well-known/mercure` unless you pass `--issuer` and `--audience`), draft-07 tokens without it (for a hub run with `--protocol both`). `task run-server` starts a development node with a tenant at `localhost`, the admin API and its reference.
 
 ## Using it with Symfony, API Platform or FrankenPHP
 
@@ -62,18 +62,18 @@ MERCURE_JWT_SECRET=<the same value as MERCURE_PUBLISHER_JWT_KEY>
 
 The application must trust Gossiper's certificate: its own (`--tls-cert`), or the self-signed one with `--tls-hosts gossiper` and its file as the HTTP client's `cafile`. On a private network, `--http-only` and an `http://` URL also work.
 
-Gossiper reads FrankenPHP's environment variables: `MERCURE_PUBLISHER_JWT_KEY`, `MERCURE_SUBSCRIBER_JWT_KEY`, `MERCURE_PUBLISHER_JWT_ALG`, `MERCURE_SUBSCRIBER_JWT_ALG`, `MERCURE_TRUSTED_ISSUERS`, `MERCURE_RESOURCE_IDENTIFIER`, and from `MERCURE_EXTRA_DIRECTIVES` the directives `anonymous`, `subscriptions`, `cors_origins`, `publish_origins`, `cookie_name`, `heartbeat` and `write_timeout` (others, such as `playground`, are logged and ignored: Gossiper has no debugging UI; `gossiper token --modern` stands in for `mercure-token --dev`).
+Gossiper reads FrankenPHP's environment variables: `MERCURE_PUBLISHER_JWT_KEY`, `MERCURE_SUBSCRIBER_JWT_KEY`, `MERCURE_PUBLISHER_JWT_ALG`, `MERCURE_SUBSCRIBER_JWT_ALG`, `MERCURE_TRUSTED_ISSUERS`, `MERCURE_RESOURCE_IDENTIFIER`, and from `MERCURE_EXTRA_DIRECTIVES` the directives `anonymous`, `subscriptions`, `cors_origins`, `publish_origins`, `cookie_name`, `heartbeat`, `write_timeout` and `protocol_version_compatibility` (which turns on `--protocol both`; others, such as `playground`, are logged and ignored: Gossiper has no debugging UI; `gossiper token --modern` stands in for `mercure-token --dev`).
 
-With FrankenPHP, leave the `mercure` directive out of the Caddyfile and route `/.well-known/mercure*` and `/.well-known/oauth-protected-resource/.well-known/mercure` to Gossiper, or give Gossiper its own host name. Applications publish over HTTP (Symfony's `Hub`); `mercure_publish()` belongs to FrankenPHP's embedded hub. `symfony/mercure` 0.8 or later with protocol version 1 sends Mercure 1.0 tokens, older versions draft-07 tokens; both are accepted.
+With FrankenPHP, leave the `mercure` directive out of the Caddyfile and route `/.well-known/mercure*` and `/.well-known/oauth-protected-resource/.well-known/mercure` to Gossiper, or give Gossiper its own host name. Applications publish over HTTP (Symfony's `Hub`); `mercure_publish()` belongs to FrankenPHP's embedded hub. `symfony/mercure` 0.8 or later with protocol version 1 sends Mercure 1.0 tokens, which Gossiper accepts by default; older versions send draft-07 tokens, accepted with `--protocol both`, as FrankenPHP's hub accepts them with `protocol_version_compatibility`.
 
 ## Protocol
 
 Both revisions of Mercure:
 
 - **Mercure 1.0** ([draft-08](https://datatracker.ietf.org/doc/draft-dunglas-mercure/)): access tokens (`at+jwt`), `match` and `match_urlpattern` subscriptions, protected resource metadata.
-- **[draft-07](https://datatracker.ietf.org/doc/html/draft-dunglas-mercure-07)**: the `mercure` JWT claim and URI-template `topic` selectors, what Symfony, API Platform and FrankenPHP clients speak today.
+- **[draft-07](https://datatracker.ietf.org/doc/html/draft-dunglas-mercure-07)**: the `mercure` JWT claim and URI-template `topic` selectors, what many Symfony, API Platform and FrankenPHP clients still speak (with `--protocol both`).
 
-Each request is read in the revision it uses; `--protocol modern` or `--protocol legacy` accepts only one. Keys are HMAC secrets, PEM public keys or JWK Set URLs (see [Configuration](#configuration)); Mercure 1.0 tokens are checked against `--resource-identifier`.
+By default Gossiper accepts Mercure 1.0 only, as the reference hub does: draft-07 tokens, `topic` parameters, the `authorization` query parameter and the `mercureAuthorization` cookie are refused. `--protocol both` accepts draft-07 too, reading each request in the revision it uses; `--protocol legacy` accepts draft-07 only. Keys are HMAC secrets, PEM public keys or JWK Set URLs (see [Configuration](#configuration)); Mercure 1.0 tokens are checked against `--resource-identifier`.
 
 The official [conformance suite](https://mercure.rocks/docs/ecosystem/conformance-tests) passes; it covers publishing, topic matching and private updates. OAuth tokens, replay and the subscriptions API, which it does not cover, are checked by the [compatibility suite](test/compat), which runs FrankenPHP's and Symfony's clients and compares Gossiper's answers with the reference hub's, and by Gossiper's own tests.
 
@@ -104,10 +104,10 @@ Mercure's HTTP protocol costs a request per publish, which caps a busy service a
 
 It is the same hub, with the same tokens, grants, topics, private updates and history. Mercure clients never send this content type, so they are unaffected.
 
-The [Go client](client) publishes over a stream to a gossiper hub and with a POST per update to any other, and subscribes with Server-Sent Events, with the same calls:
+The [Go client](client) publishes with a POST per update by default, which any Mercure hub takes, or over a stream to a gossiper hub with `Transport: client.Stream` (`client.Auto` streams to a gossiper hub and POSTs to any other), and subscribes with Server-Sent Events, with the same calls:
 
 ```go
-c, err := client.New(client.Options{URL: "https://events.example/.well-known/mercure", Token: jwt})
+c, err := client.New(client.Options{URL: "https://events.example/.well-known/mercure", Token: jwt, Transport: client.Stream})
 defer c.Close()
 
 id, err := c.Publish(ctx, client.Update{Topics: []string{"https://example.com/books/1"}, Data: `{"title":"Dune"}`})
@@ -121,7 +121,7 @@ for ev := range sub.Events() {
 
 - **TLS:** `CAFile` trusts a hub's certificate beside the system's (a private CA, or a node's `self-signed.crt`); `InsecureSkipVerify` takes any certificate, for development only.
 - **Bypassing the proxy:** a service inside the cluster can talk to a node directly, with `URL` the node's address and `Host` the host name the hub (a tenant's) is reached at: `client.Options{URL: "https://10.0.0.5:8080/.well-known/mercure", Host: "events.example", CAFile: "node.crt"}`. To a node with `--http-only`, `CleartextHTTP2` makes the publish stream and every subscription share one connection, as HTTPS does by itself.
-- **Order:** a client's publishes keep their order, resends included.
+- **Order:** over a stream a client's publishes keep their order, resends included. With a POST per update, `Publish` returns once the hub has the update, so publishes made one after another keep their order; `PublishAsync` ones are requests of their own and may not.
 - **Subscriptions** reconnect by themselves and resume from their last event ID: after a lost connection, a node shutting down, or an expired token (`TokenFunc` supplies fresh ones). One the hub refuses for good (401 even with a fresh token, 403, 404) ends, and `Err` says why. An event over `MaxEventSize` (default 8 MiB; raise it with the hub's `--max-publish-size`) ends the stream rather than fill the client's memory.
 - **The publish stream** reopens by itself and sends again, first and in order, what its hub did not take. A stream that cannot open is retried with a growing delay (up to 10s); HTTP/2 pings, and 30s of silence while answers are due, catch a dead connection.
 
@@ -283,7 +283,7 @@ Every setting is a flag, a `GOSSIPER_*` environment variable or a key in `gossip
 | `--http-only` | off | plain HTTP, behind a proxy that terminates TLS |
 | `--tls-cert`, `--tls-key` | self-signed | the certificate and key served (PEM) |
 | `--tls-dir`, `--tls-hosts` | made at each start | where the self-signed certificate is kept; further names and addresses for it |
-| `--protocol` | `both` | `both`, `modern` (Mercure 1.0) or `legacy` (draft-07) |
+| `--protocol` | `modern` | `modern` (Mercure 1.0 only), `both`, or `legacy` (draft-07 only) |
 | `--publisher-key`, `--publisher-alg`, `--publisher-jwks-url` | HS256 for a secret, the key's own for a PEM key | publishers' JWT key: an HMAC secret, a PEM public key (RSA of 2048 bits or more; never taken as an HMAC secret) or a JWK Set URL (public-key algorithms only, unless `--publisher-alg` names an HS one) |
 | `--subscriber-key`, `--subscriber-alg`, `--subscriber-jwks-url` | publisher's | subscribers' JWT key |
 | `--trusted-issuers` | `https://localhost` | `iss` values accepted with those keys (Mercure 1.0) |
@@ -326,7 +326,7 @@ mux.Handle("/.well-known/oauth-protected-resource/.well-known/mercure", hub)
 id, err := hub.Publish(ctx, &gossiper.Update{Topics: []string{"https://example.com/chat"}, Data: "hello"})
 ```
 
-See [examples/embed](examples/embed). To cluster an embedded hub, pass `cluster.New(gossipCluster, cluster.Options{})` as `Config.Transport`.
+The hub accepts Mercure 1.0 only unless `Config.Protocol` says otherwise (`gossiper.ProtocolBoth` for draft-07 clients too). See [examples/embed](examples/embed). To cluster an embedded hub, pass `cluster.New(gossipCluster, cluster.Options{})` as `Config.Transport`.
 
 | Package | |
 | --- | --- |

@@ -4,9 +4,9 @@
 #   go test -tags compat -count=1 -v ./test/compat/
 #   docker compose -f test/compat/docker-compose.yml down -v
 #
-# Host ports: 13000 gossiper, 13001 gossiper (--modern-subscription-format), 13002 PHP app using Gossiper,
+# Host ports: 13000 gossiper (--protocol both), 13001 gossiper (--protocol both --modern-subscription-format), 13002 PHP app using Gossiper,
 # 13003 FrankenPHP with the built-in hub in 0.x-compatibility mode (hub + the same PHP app, the legacy reference),
-# 13004 Gossiper --protocol modern, 13005 FrankenPHP with the built-in hub in its default Mercure 1.0 mode (the
+# 13004 Gossiper --protocol modern (the default, spelled out), 13005 FrankenPHP with the built-in hub in its default Mercure 1.0 mode (the
 # modern reference, with the PHP app), 13006 PHP app using the --protocol modern Gossiper.
 name: gossiper-compat
 
@@ -22,6 +22,7 @@ services:
       - serve
       - --listen=:3000
       - --http-only
+      - --protocol=both
       - --publisher-key=compat-secret-compat-secret-0123456789
       - --anonymous
       - --subscriptions
@@ -37,6 +38,7 @@ services:
       - serve
       - --listen=:3000
       - --http-only
+      - --protocol=both
       - --publisher-key=compat-secret-compat-secret-0123456789
       - --anonymous
       - --subscriptions

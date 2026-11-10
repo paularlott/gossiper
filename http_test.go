@@ -21,6 +21,9 @@ func serve(t *testing.T, h *Hub, method, target string, hdr map[string]string) *
 
 func newHub(t *testing.T, cfg Config) *Hub {
 	t.Helper()
+	if cfg.Protocol == ProtocolDefault { // the tests speak draft-07 unless they choose a protocol
+		cfg.Protocol = ProtocolBoth
+	}
 	if !hasKey(cfg.PublisherKey) {
 		cfg.PublisherKey.Key = testSecret
 	}

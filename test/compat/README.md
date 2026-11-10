@@ -17,7 +17,7 @@ docker compose -f test/compat/docker-compose.yml down -v
 
 | Host port | Container | Role |
 |---|---|---|
-| 13000 | gossiper (`--protocol both`, the default) | must pass the legacy and the Mercure 1.0 suites |
+| 13000 | gossiper (`--protocol both`) | must pass the legacy and the Mercure 1.0 suites |
 | 13001 | gossiper `--modern-subscription-format` | draft-07 hub with the current subscription format |
 | 13002 | app | FrankenPHP without hub, the PHP app publishing to 13000 |
 | 13003 | reference | FrankenPHP built-in hub, `protocol_version_compatibility 8` (the legacy reference) + the PHP app |

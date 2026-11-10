@@ -187,17 +187,29 @@ func (h *Hub) newVerifiers() error {
 			if h.pub, err = auth.NewVerifier(pubKey); err != nil {
 				return err
 			}
-			if h.pub.Weak() {
-				h.log.Warn("the publisher key is shorter than its algorithm needs; use a longer secret")
-			}
 		}
 		if hasKey(subKey) {
 			if h.sub, err = auth.NewVerifier(subKey); err != nil {
 				return err
 			}
-			if h.sub.Weak() && hasKey(cfg.SubscriberKey) {
-				h.log.Warn("the subscriber key is shorter than its algorithm needs; use a longer secret")
-			}
+		}
+	}
+	// The keys are checked whatever the protocol: a Mercure 1.0 only hub with no trusted issuer to bind them to
+	// verifies nothing with them, but a bad key is still refused, and a weak one still warned about.
+	for _, k := range []struct {
+		key  auth.KeyConfig
+		role string
+		warn bool
+	}{{pubKey, "publisher", true}, {subKey, "subscriber", hasKey(cfg.SubscriberKey)}} {
+		if !hasKey(k.key) {
+			continue
+		}
+		weak, err := auth.CheckKey(k.key)
+		if err != nil {
+			return err
+		}
+		if weak && k.warn {
+			h.log.Warn("the " + k.role + " key is shorter than its algorithm needs; use a longer secret")
 		}
 	}
 	if cfg.Protocol.modern() {

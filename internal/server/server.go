@@ -154,7 +154,7 @@ func defaultAlgorithm(k *auth.KeyConfig) {
 // Defaults returns the default settings.
 func Defaults() Settings {
 	return Settings{
-		Listen: ":8080", LogLevel: "info", Protocol: "both", TrustedIssuers: []string{"https://localhost"}, LogFmt: "console", Heartbeat: "30s",
+		Listen: ":8080", LogLevel: "info", Protocol: "modern", TrustedIssuers: []string{"https://localhost"}, LogFmt: "console", Heartbeat: "30s",
 		WriteTimeout: "30s", DispatchBuffer: 1000, HistorySize: 10000, HistoryBytes: 64 << 20, HistoryBudget: 1 << 30, ReplayWindow: "5s",
 		MaxPublishSize: 1 << 20, MaxSelectors: 256, MaxPatterns: 32, HistoryAge: "1h", ShutdownTimeout: "10s",
 		MaxSubscribers: 100000, MaxPerIP: 1000, ShutdownDelay: "0s",

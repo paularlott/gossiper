@@ -764,7 +764,7 @@ func TestHubAuthJWKSOnlyKeyConfig(t *testing.T) {
 		t.Fatal("a plain-HTTP JWK Set URL was accepted without AllowInsecureKeyURLs")
 	}
 	log := &recLogger{}
-	h, err := New(Config{PublisherKey: key, AllowInsecureKeyURLs: true, Logger: log})
+	h, err := New(Config{PublisherKey: key, Protocol: ProtocolBoth, AllowInsecureKeyURLs: true, Logger: log})
 	if err != nil {
 		t.Fatal(err)
 	}

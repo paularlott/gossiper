@@ -89,7 +89,8 @@ func settings() Settings {
 	s.PublisherKey = secret
 	s.Anonymous = true
 	s.Metrics = true
-	s.HTTPOnly = true // the tests speak plain HTTP; tls_test.go has the HTTPS ones
+	s.HTTPOnly = true   // the tests speak plain HTTP; tls_test.go has the HTTPS ones
+	s.Protocol = "both" // and draft-07, unless they choose otherwise
 	return s
 }
 
@@ -378,6 +379,9 @@ func TestHistoryAgeSetting(t *testing.T) {
 		}
 		srv.Close(context.Background())
 	}
+	if Defaults().Protocol != "modern" {
+		t.Errorf("default protocol %q: Mercure 1.0 only, as the reference hub", Defaults().Protocol)
+	}
 	if Defaults().HistoryAge != "1h" {
 		t.Errorf("default history age %q", Defaults().HistoryAge)
 	}
@@ -395,6 +399,18 @@ func TestExtraDirectives(t *testing.T) {
 	}
 	if len(log.warns) != 1 || !strings.Contains(log.warns[0], "not supported") {
 		t.Errorf("warnings %q", log.warns)
+	}
+	if s.Protocol != "modern" {
+		t.Errorf("protocol %q without protocol_version_compatibility", s.Protocol)
+	}
+	applyExtraDirectives(&s, "protocol_version_compatibility 8\n", log)
+	if s.Protocol != "both" {
+		t.Errorf("protocol %q with protocol_version_compatibility", s.Protocol)
+	}
+	s.Protocol = "legacy"
+	applyExtraDirectives(&s, "protocol_version_compatibility 7\n", log)
+	if s.Protocol != "legacy" {
+		t.Errorf("protocol %q: --protocol given, the directive changed it", s.Protocol)
 	}
 }
 

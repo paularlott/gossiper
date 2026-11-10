@@ -24,7 +24,7 @@ const page = `<!doctype html>
 <ul id="log"></ul>
 <script>
 const url = new URL('/.well-known/mercure', location);
-url.searchParams.append('topic', 'https://example.com/chat');
+url.searchParams.append('match', 'https://example.com/chat');
 const es = new EventSource(url);
 es.onmessage = e => {
 	const li = document.createElement('li');

@@ -151,24 +151,83 @@ type internalOpts struct {
 	minRefetch time.Duration
 }
 
-func newVerifier(cfg KeyConfig, o internalOpts) (*Verifier, error) {
+// CheckKey validates cfg as NewVerifier does, without fetching a key set or holding anything to close: for a key a
+// hub holds though it verifies no draft-07 tokens with it. weak is WeakSecret's answer for a static key.
+func CheckKey(cfg KeyConfig) (weak bool, err error) {
+	if err := checkConfig(cfg); err != nil {
+		return false, err
+	}
+	if cfg.JWKSURL != "" {
+		_, err := jwksMethods(cfg)
+		return false, err
+	}
+	if _, _, err := verifierKey(cfg); err != nil {
+		return false, err
+	}
+	return WeakSecret(cfg), nil
+}
+
+func checkConfig(cfg KeyConfig) error {
 	if (cfg.Key == "") == (cfg.JWKSURL == "") {
-		return nil, errors.New("auth: exactly one of Key and JWKSURL must be set")
+		return errors.New("auth: exactly one of Key and JWKSURL must be set")
 	}
 	if cfg.Leeway < 0 {
-		return nil, errors.New("auth: negative Leeway")
+		return errors.New("auth: negative Leeway")
 	}
+	return nil
+}
 
-	if cfg.JWKSURL != "" {
-		if _, err := checkURL(cfg.JWKSURL, cfg.AllowInsecureHTTP); err != nil {
-			return nil, fmt.Errorf("auth: JWKSURL: %w", err)
+// jwksMethods checks a key set's URL and returns the algorithms its keys may sign with.
+func jwksMethods(cfg KeyConfig) ([]string, error) {
+	if _, err := checkURL(cfg.JWKSURL, cfg.AllowInsecureHTTP); err != nil {
+		return nil, fmt.Errorf("auth: JWKSURL: %w", err)
+	}
+	if cfg.Algorithm == "" {
+		return remoteAlgs, nil
+	}
+	if _, ok := algs[cfg.Algorithm]; !ok {
+		return nil, fmt.Errorf("auth: unsupported algorithm %q", cfg.Algorithm)
+	}
+	return []string{cfg.Algorithm}, nil
+}
+
+// verifierKey returns a static key's algorithm and the key to verify with: the secret, or the parsed public key.
+func verifierKey(cfg KeyConfig) (string, any, error) {
+	alg := cfg.Algorithm
+	if alg == "" {
+		var err error
+		if alg, err = DefaultAlgorithm(cfg.Key); err != nil {
+			return "", nil, err
 		}
-		methods := remoteAlgs
-		if cfg.Algorithm != "" {
-			if _, ok := algs[cfg.Algorithm]; !ok {
-				return nil, fmt.Errorf("auth: unsupported algorithm %q", cfg.Algorithm)
-			}
-			methods = []string{cfg.Algorithm}
+	}
+	info, ok := algs[alg]
+	if !ok {
+		return "", nil, fmt.Errorf("auth: unsupported algorithm %q", alg)
+	}
+	if info.kind == kindHMAC {
+		if isPEM(cfg.Key) {
+			return "", nil, errPEMSecret(alg)
+		}
+		return alg, []byte(cfg.Key), nil
+	}
+	pub, err := parsePublicKeyPEM(cfg.Key)
+	if err != nil {
+		return "", nil, err
+	}
+	if !keyMatchesAlg(pub, alg) {
+		return "", nil, fmt.Errorf("auth: %s key does not match algorithm %s", describeKey(pub), alg)
+	}
+	return alg, pub, nil
+}
+
+func newVerifier(cfg KeyConfig, o internalOpts) (*Verifier, error) {
+	if err := checkConfig(cfg); err != nil {
+		return nil, err
+	}
+	if cfg.JWKSURL != "" {
+		methods, err := jwksMethods(cfg)
+		if err != nil {
+			return nil, err
 		}
 		v := &Verifier{
 			parser: jwt.NewParser(jwt.WithValidMethods(methods), jwt.WithLeeway(cfg.Leeway)),
@@ -177,44 +236,19 @@ func newVerifier(cfg KeyConfig, o internalOpts) (*Verifier, error) {
 		v.jwks = newJWKSSource(cfg, o)
 		return v, nil
 	}
-
-	alg := cfg.Algorithm
-	if alg == "" {
-		var err error
-		if alg, err = DefaultAlgorithm(cfg.Key); err != nil {
-			return nil, err
-		}
+	alg, key, err := verifierKey(cfg)
+	if err != nil {
+		return nil, err
 	}
-	info, ok := algs[alg]
-	if !ok {
-		return nil, fmt.Errorf("auth: unsupported algorithm %q", alg)
-	}
-	if info.kind == kindHMAC && isPEM(cfg.Key) {
-		return nil, errPEMSecret(alg)
-	}
-
 	v := &Verifier{
 		parser: jwt.NewParser(jwt.WithValidMethods([]string{alg}), jwt.WithLeeway(cfg.Leeway)),
 		weak:   WeakSecret(cfg),
-	}
-	var key any
-	if info.kind == kindHMAC {
-		key = []byte(cfg.Key)
-	} else {
-		pub, err := parsePublicKeyPEM(cfg.Key)
-		if err != nil {
-			return nil, err
-		}
-		if !keyMatchesAlg(pub, alg) {
-			return nil, fmt.Errorf("auth: %s key does not match algorithm %s", describeKey(pub), alg)
-		}
-		key = pub
-	}
-	v.keyfn = func(t *jwt.Token) (any, error) {
-		if _, ok := t.Header["crit"]; ok {
-			return nil, &keyError{msg: "unsupported crit header"}
-		}
-		return key, nil
+		keyfn: func(t *jwt.Token) (any, error) {
+			if _, ok := t.Header["crit"]; ok {
+				return nil, &keyError{msg: "unsupported crit header"}
+			}
+			return key, nil
+		},
 	}
 	return v, nil
 }

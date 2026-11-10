@@ -141,6 +141,9 @@ func hubDo(t testing.TB, h *Hub, method, target string, hdr http.Header, body st
 // newModernHub is a hub for hubDo, closed at the end of the test.
 func newModernHub(t testing.TB, cfg Config) *Hub {
 	t.Helper()
+	if cfg.Protocol == ProtocolDefault { // the tests speak draft-07 unless they choose a protocol
+		cfg.Protocol = ProtocolBoth
+	}
 	if !hasKey(cfg.PublisherKey) {
 		cfg.PublisherKey = auth.KeyConfig{Key: testSecret}
 	}
@@ -271,13 +274,38 @@ func (e *env) get(t testing.TB, target string, hdr http.Header) result {
 	return e.do(t, http.MethodGet, target, hdr, "")
 }
 
+// A hub's default protocol is Mercure 1.0 only, as the reference hub's: draft-07 tokens, topic parameters and the
+// authorization query parameter are refused; Mercure 1.0 tokens and matchers are taken.
+func TestDefaultProtocolIsModern(t *testing.T) {
+	h, err := New(Config{PublisherKey: auth.KeyConfig{Key: testSecret}, TrustedIssuers: []string{testIssuer}, Anonymous: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = h.Close(context.Background()) })
+	bearer := func(tok string) http.Header { return http.Header{"Authorization": {"Bearer " + tok}} }
+	f := form("topic", "https://example.com/a").Encode()
+	if w := hubDo(t, h, http.MethodPost, hubPath, bearer(tokenFor(t, all, all)), f); w.Code != http.StatusUnauthorized {
+		t.Errorf("draft-07 token: %d", w.Code)
+	}
+	if w := hubDo(t, h, http.MethodPost, hubPath+"?authorization="+tokenFor(t, all, all), nil, f); w.Code != http.StatusUnauthorized {
+		t.Errorf("authorization query parameter: %d", w.Code)
+	}
+	modern := accessFor(t, "http://example.com"+hubPath, mDetail(pubOnly, mBare("*")))
+	if w := hubDo(t, h, http.MethodPost, hubPath, bearer(modern), f); w.Code != http.StatusOK {
+		t.Errorf("Mercure 1.0 token: %d %s", w.Code, w.Body)
+	}
+	if w := hubDo(t, h, http.MethodGet, hubPath+"?topic=https%3A%2F%2Fexample.com%2Fa", nil, ""); w.Code != http.StatusBadRequest {
+		t.Errorf("topic parameter: %d", w.Code)
+	}
+}
+
 func TestParseProtocol(t *testing.T) {
 	tests := []struct {
 		in   string
 		want Protocol
 		ok   bool
 	}{
-		{"", ProtocolBoth, true}, {"both", ProtocolBoth, true}, {"BOTH", ProtocolBoth, true},
+		{"", ProtocolModern, true}, {"both", ProtocolBoth, true}, {"BOTH", ProtocolBoth, true},
 		{"legacy", ProtocolLegacy, true}, {"07", ProtocolLegacy, true}, {"draft-07", ProtocolLegacy, true},
 		{"modern", ProtocolModern, true}, {"1.0", ProtocolModern, true}, {"1", ProtocolModern, true},
 		{"08", ProtocolModern, true}, {"draft-08", ProtocolModern, true}, {"Modern", ProtocolModern, true},
@@ -290,7 +318,7 @@ func TestParseProtocol(t *testing.T) {
 		}
 	}
 	if !ProtocolBoth.legacy() || !ProtocolBoth.modern() || !ProtocolLegacy.legacy() || ProtocolLegacy.modern() ||
-		ProtocolModern.legacy() || !ProtocolModern.modern() {
+		ProtocolModern.legacy() || !ProtocolModern.modern() || ProtocolDefault.legacy() || !ProtocolDefault.modern() {
 		t.Error("legacy()/modern() do not describe the protocols")
 	}
 	if _, err := New(Config{Protocol: Protocol(7)}); err == nil {
