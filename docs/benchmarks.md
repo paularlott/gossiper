@@ -20,7 +20,9 @@ go run ./test/bench -url http://mercure -issuer https://localhost -sub-param mat
 ```
 
 The benchmark's subscribers all come from one address, so the hubs it starts run with `--max-subscribers-per-ip 0`.
-A hub benchmarked with `-url` needs the same.
+A hub benchmarked with `-url` needs the same. The benchmark speaks draft-07 unless given `-issuer` and
+`-sub-param match`, so the hubs it starts run with `--protocol both`; a hub at `-url` that accepts only Mercure 1.0
+(gossiper's default, and the official hub's) needs `-issuer https://localhost -sub-param match`.
 
 | Workload | What it does |
 | --- | --- |
