@@ -30,10 +30,10 @@ func TestParseTenants(t *testing.T) {
 		"valid":                  {ok, true},
 		"no tenants":             {`{"tenants":[]}`, true},
 		"empty object":           {`{}`, true},
-		"duplicate names":        {`{"tenants":[{"name":"a","hosts":["a.test"],"mercure":{}},{"name":"a","hosts":["b.test"],"mercure":{}}]}`, false},
+		"duplicate names":        {`{"tenants":[{"name":"a","hosts":["a.test"],"mercure":{"publisher_key":"k"}},{"name":"a","hosts":["b.test"],"mercure":{"publisher_key":"k"}}]}`, false},
 		"mercure without hosts":  {`{"tenants":[{"name":"a","mercure":{"publisher_key":"k"}}]}`, false},
 		"mercure, empty hosts":   {`{"tenants":[{"name":"a","hosts":[],"mercure":{"publisher_key":"k"}}]}`, false},
-		"one without hosts":      {`{"tenants":[{"name":"a","hosts":["a.test"],"mercure":{}},{"name":"b","mercure":{}}]}`, false},
+		"one without hosts":      {`{"tenants":[{"name":"a","hosts":["a.test"],"mercure":{"publisher_key":"k"}},{"name":"b","mercure":{"publisher_key":"k"}}]}`, false},
 		"mercure with hosts":     {`{"tenants":[{"name":"a","hosts":["a.test"],"mercure":{"publisher_key":"k"}}]}`, true},
 		"empty name":             {`{"tenants":[{"name":"","mercure":{}}]}`, false},
 		"space in name":          {`{"tenants":[{"name":"a b","mercure":{}}]}`, false},
@@ -42,7 +42,7 @@ func TestParseTenants(t *testing.T) {
 		"long name":              {`{"tenants":[{"name":"` + strings.Repeat("a", 129) + `","mercure":{}}]}`, false},
 		"no settings":            {`{"tenants":[{"name":"a"}]}`, false},
 		"hosts without mercure":  {`{"tenants":[{"name":"a","hosts":["a.example"]}]}`, false},
-		"nats is gone":           {`{"tenants":[{"name":"a","hosts":["a.test"],"mercure":{},"nats":{"users":[]}}]}`, false},
+		"nats is gone":           {`{"tenants":[{"name":"a","hosts":["a.test"],"mercure":{"publisher_key":"k"},"nats":{"users":[]}}]}`, false},
 		"unknown tenant field":   {`{"tenants":[{"name":"a","mercure":{},"account":"b"}]}`, false},
 		"unknown mercure field":  {`{"tenants":[{"name":"a","mercure":{"publisher_secret":"x"}}]}`, false},
 		"unknown top-level":      {`{"tenants":[],"default":{}}`, false},
@@ -50,6 +50,10 @@ func TestParseTenants(t *testing.T) {
 		"not json":               {`tenants:`, false},
 		"wrong type":             {`{"tenants":{"name":"a"}}`, false},
 		"default is not allowed": {`{"tenants":[{"name":"","mercure":{}}]}`, false},
+		"no key":                 {`{"tenants":[{"name":"a","hosts":["a.test"],"mercure":{}}]}`, false},
+		"subscriber key only":    {`{"tenants":[{"name":"a","hosts":["a.test"],"mercure":{"subscriber_key":"k"}}]}`, false},
+		"key set URL":            {`{"tenants":[{"name":"a","hosts":["a.test"],"mercure":{"publisher_jwks_url":"https://idp.example/jwks"}}]}`, true},
+		"authorization server":   {`{"tenants":[{"name":"a","hosts":["a.test"],"mercure":{"authorization_servers":["https://idp.example"]}}]}`, true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := parseTenants([]byte(tc.json))
@@ -795,5 +799,72 @@ func TestTenantsCORSOrigins(t *testing.T) {
 	}
 	if n.Tenants.Hub("globex") == nil {
 		t.Fatal("no globex hub")
+	}
+}
+
+// A tenant must have a key: one without accepts no token. The API refuses it with 400.
+func TestTenantNeedsKey(t *testing.T) {
+	n := startNode(t, adminSettings(t, ""))
+	code, out := call(t, n.base, "POST", "/api/tenants", apiToken, map[string]any{"name": "nokey", "hosts": []string{"nokey.test"},
+		"mercure": map[string]any{"anonymous": true}})
+	if code != 400 {
+		t.Fatalf("POST a tenant without a key: %d %v, want 400", code, out)
+	}
+}
+
+// modernTenantToken is a Mercure 1.0 access token signed with secret, from iss, for the hub at host.
+func modernTenantToken(t testing.TB, secret, iss, host string) string {
+	t.Helper()
+	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"iss": iss, "aud": "http://" + host + "/.well-known/mercure", "sub": "s", "client_id": "c",
+		"iat": time.Now().Unix(), "exp": time.Now().Add(time.Minute).Unix(), "jti": "j",
+		"authorization_details": []any{map[string]any{
+			"type": "https://mercure.rocks/authorization-detail", "actions": []string{"publish"},
+			"topics": []any{map[string]any{"match": "*"}},
+		}},
+	})
+	tok.Header["typ"] = "at+jwt"
+	s, err := tok.SignedString([]byte(secret))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// A tenant without trusted_issuers takes the server's (https://localhost by default), as a hub of its own would; one
+// with its own takes those alone.
+func TestTenantDefaultTrustedIssuers(t *testing.T) {
+	n := startNode(t, adminSettings(t, ""))
+	a := newTN(t, "alpha", false, false)
+	api(t, n.base, "POST", "/api/tenants", a.spec(t), 201)
+	b := newTN(t, "bravo", false, false)
+	bs := b.spec(t)
+	bs.Mercure.TrustedIssuers = []string{"https://bravo.example"}
+	api(t, n.base, "POST", "/api/tenants", bs, 201)
+	eventually(t, 5*time.Second, "served", func() bool { return serves(t, n, a) && serves(t, n, b) })
+
+	publish := func(d tn, iss string) int {
+		req, _ := http.NewRequest(http.MethodPost, n.base+"/.well-known/mercure", strings.NewReader("topic=x&data=y"))
+		req.Host = d.host
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Authorization", "Bearer "+modernTenantToken(t, d.secret, iss, d.host))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if code := publish(a, "https://localhost"); code != 200 {
+		t.Errorf("tenant without trusted_issuers, iss https://localhost: %d, want 200", code)
+	}
+	if code := publish(a, "https://elsewhere.example"); code != 401 {
+		t.Errorf("tenant without trusted_issuers, another iss: %d, want 401", code)
+	}
+	if code := publish(b, "https://bravo.example"); code != 200 {
+		t.Errorf("tenant with its own trusted_issuers, its iss: %d, want 200", code)
+	}
+	if code := publish(b, "https://localhost"); code != 401 {
+		t.Errorf("tenant with its own trusted_issuers, the server's iss: %d, want 401", code)
 	}
 }

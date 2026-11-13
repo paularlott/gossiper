@@ -32,7 +32,8 @@ Tenants come from a file (`--tenants-file`), from the [admin API](#admin-api), o
 
 `mercure` takes a hub's keys and settings: `publisher_key`, `publisher_alg`, `publisher_jwks_url`, the same for `subscriber_`, `trusted_issuers`, `authorization_servers`, `resource_identifier`, `hub_url`, `anonymous`, `subscriptions`, `cors_origins`, `publish_origins`, `cookie_name` and `access_token_cookie_name`. The server's other settings (limits, history, timeouts) apply to every tenant's hub, each separately.
 
-- **Trusted issuers have no default for tenants.** A tenant accepts Mercure 1.0 tokens signed with its keys only from its `trusted_issuers`, or tokens of its `authorization_servers`. A tenant with neither refuses every Mercure 1.0 token. (The single-hub server defaults to `https://localhost`; tenants do not inherit it.)
+- **Every tenant needs a key:** `publisher_key`, `publisher_jwks_url` or `authorization_servers`. A tenant without one is refused (400 from the API; the server will not start with one in the tenants file).
+- **Trusted issuers default to the server's.** Mercure 1.0 tokens signed with a tenant's keys must come from one of its `trusted_issuers`; a tenant that names none takes the server's `--trusted-issuers` (`https://localhost` by default), so `gossiper token --modern --key <the tenant's key>` works with it. A tenant's own list replaces the server's.
 - **Set `resource_identifier`** (or an absolute `hub_url`) so tokens are bound to the tenant's hub. Without it, tokens are checked against the URL each client contacted, and a warning is logged.
 - With tenants there is no hub of the server's own, so the server's key settings and `--anonymous` are refused.
 - Two tenants may not share a key or a host.

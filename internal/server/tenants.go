@@ -89,6 +89,10 @@ func parseTenants(data []byte) ([]tenantSpec, error) {
 		if t.Mercure == nil {
 			return nil, fmt.Errorf("tenant %q: no mercure settings", t.Name)
 		}
+		if m := t.Mercure; m.PublisherKey == "" && m.PublisherJWKSURL == "" && len(m.AuthorizationServers) == 0 {
+			return nil, fmt.Errorf("tenant %q: give it a key (publisher_key, publisher_jwks_url or authorization_servers): "+
+				"a hub without one accepts no token", t.Name)
+		}
 		if len(t.Hosts) == 0 {
 			return nil, fmt.Errorf("tenant %q: give it hosts: the host picks a tenant's hub", t.Name)
 		}
@@ -139,7 +143,12 @@ func mercureTenants(base gossiper.Config, specs []tenantSpec) []gossiper.Tenant 
 		defaultAlgorithm(&cfg.PublisherKey)
 		cfg.SubscriberKey = auth.KeyConfig{Key: m.SubscriberKey, Algorithm: m.SubscriberAlg, JWKSURL: m.SubscriberJWKSURL}
 		defaultAlgorithm(&cfg.SubscriberKey)
-		cfg.TrustedIssuers = m.TrustedIssuers
+		// The server's trusted issuers (https://localhost unless set) unless the tenant names its own: tokens signed
+		// with the tenant's keys then work as they would with a hub of its own.
+		cfg.TrustedIssuers = base.TrustedIssuers
+		if len(m.TrustedIssuers) > 0 {
+			cfg.TrustedIssuers = m.TrustedIssuers
+		}
 		cfg.Issuers = nil
 		for _, as := range m.AuthorizationServers {
 			cfg.Issuers = append(cfg.Issuers, auth.Issuer{Issuer: as, Discover: true})

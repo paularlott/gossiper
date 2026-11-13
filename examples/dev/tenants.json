@@ -5,7 +5,6 @@
       "hosts": ["localhost", "127.0.0.1"],
       "mercure": {
         "publisher_key": "dev-publisher-key-not-for-production-0123456789",
-        "trusted_issuers": ["https://localhost"],
         "anonymous": true,
         "subscriptions": true
       }

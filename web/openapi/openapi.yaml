@@ -236,7 +236,7 @@ components:
       type: object
       additionalProperties: false
       required: [hosts, mercure]
-      description: A tenant needs at least one host, which picks its hub, and Mercure settings, its keys among them (a hub without keys accepts no token). The server's other settings (limits, history, timeouts) apply to every tenant's hub.
+      description: A tenant needs at least one host, which picks its hub, and Mercure settings with a key (publisher_key, publisher_jwks_url or authorization_servers; 400 without). The server's other settings (limits, history, timeouts) apply to every tenant's hub.
       properties:
         name:
           $ref: "#/components/schemas/TenantName"
@@ -295,7 +295,7 @@ components:
         trusted_issuers:
           type: array
           items: {type: string}
-          description: iss values accepted in Mercure 1.0 tokens
+          description: iss values accepted in Mercure 1.0 tokens signed with the tenant's keys (default, when empty, the server's trusted issuers, https://localhost unless set)
         authorization_servers:
           type: array
           items: {type: string}
