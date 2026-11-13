@@ -9,7 +9,7 @@
 # hub's URL, plain http here):
 #
 #   go run ./cmd/gossiper token --modern --key "$GOSSIPER_PUBLISHER_KEY" --publish '*' \
-#     --audience http://localhost:8080/.well-known/mercure
+#     --audience http://localhost:8080/.well-known/mercure    # your GOSSIPER_HTTP_PORT, if you set one
 #
 # A stream that ends (a node stops) reconnects through Caddy to a live node with Last-Event-ID and gets what it
 # missed from that node's history.
@@ -32,6 +32,9 @@ x-node: &node
     GOSSIPER_ANONYMOUS: "true"
     GOSSIPER_SUBSCRIPTIONS: "true"
     GOSSIPER_METRICS: "true"
+    # Metrics (and the admin API, were it enabled) on their own listener, which Caddy does not proxy: scrape
+    # nodeN:9090/metrics from inside the compose network.
+    GOSSIPER_ADMIN_LISTEN: ":9090"
     # Caddy in front speaks to the nodes over plain HTTP on the compose network; it could terminate TLS for clients.
     GOSSIPER_HTTP_ONLY: "true"
     # The hub's public URL: Mercure 1.0 tokens are bound to it (and relative topics resolve against it).
