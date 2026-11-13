@@ -7,8 +7,11 @@
     "lint:api": "REDOCLY_SUPPRESS_UPDATE_NOTICE=true redocly lint --format=stylish"
   },
   "devDependencies": {
+    "@alpinejs/csp": "3.17.5",
     "@redocly/cli": "2.66.0",
+    "@tailwindcss/vite": "4.3.5",
     "redoc": "3.0.1",
+    "tailwindcss": "4.3.5",
     "vite": "8.3.4"
   }
 }

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Writes the notices of the third-party software in gossiper's binary to stdout (THIRD_PARTY_LICENSES.txt in the
-# release archives and the container image): the Go modules it is built from, and the JavaScript bundled into the
-# admin API's reference page.
+# release archives and the container image): the Go modules it is built from, and the JavaScript and CSS bundled into
+# the admin API's reference page and the status page.
 #
 # Needs go-licenses (go install github.com/google/go-licenses/v2@v2.0.1) and the web build (web/dist/licenses.md).
 set -eu
@@ -18,6 +18,6 @@ echo "Go modules built into the binary:"
 go-licenses report --ignore github.com/paularlott/gossiper --template scripts/licenses.tpl ./cmd/gossiper
 echo
 echo "================================================================================"
-echo "JavaScript bundled into the admin API's reference page (/api-docs/):"
+echo "JavaScript and CSS bundled into the admin API's reference page (/api-docs/) and the status page (/ on the admin listener):"
 echo
 cat web/dist/licenses.md

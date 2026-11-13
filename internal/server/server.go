@@ -39,6 +39,7 @@ import (
 type Settings struct {
 	Listen         string
 	AdminListen    string   // the admin API, its docs, metrics and profiling on a listener of their own (empty: on Listen)
+	AdminUI        bool     // the status page at / on the admin listener (with AdminListen only)
 	TrustedProxies []string // proxies (addresses or CIDR ranges) whose X-Forwarded-For names the client
 	HTTPOnly       bool     // plain HTTP (and h2c), behind a TLS-terminating proxy; HTTPS otherwise
 	TLSCert        string   // with TLSKey, the certificate served; else a self-signed one
@@ -160,6 +161,7 @@ func Defaults() Settings {
 		WriteTimeout: "30s", DispatchBuffer: 1000, HistorySize: 10000, HistoryBytes: 64 << 20, HistoryBudget: 1 << 30, ReplayWindow: "5s",
 		MaxPublishSize: 1 << 20, MaxSelectors: 256, MaxPatterns: 32, HistoryAge: "1h", ShutdownTimeout: "10s",
 		MaxSubscribers: 100000, MaxPerIP: 1000, ShutdownDelay: "0s", HistoryFlush: "1s",
+		AdminUI: true,
 	}
 }
 
@@ -580,6 +582,9 @@ func (s *Server) routes() (http.Handler, http.Handler) {
 	if s.settings.AdminListen != "" {
 		admin = http.NewServeMux()
 		s.healthRoutes(admin)
+		if s.settings.AdminUI { // the status page (ui.go): never on the public listener
+			s.uiRoutes(admin)
+		}
 	}
 	if s.store != nil && (s.settings.APIToken != "" || s.adminIDP != nil) {
 		admin.HandleFunc("GET /api-docs", func(w http.ResponseWriter, r *http.Request) {
@@ -619,17 +624,12 @@ func (s *Server) healthRoutes(mux *http.ServeMux) {
 	})
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		if s.draining.Load() { // shutting down: send new clients elsewhere
+		// draining: shutting down, send new clients elsewhere; syncing: still catching up, replay would miss updates
+		r := s.readiness()
+		if r != "ready" {
 			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = w.Write([]byte("draining\n"))
-			return
 		}
-		if s.repl != nil && !s.repl.Ready() { // still catching up: replay would miss updates
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = w.Write([]byte("syncing\n"))
-			return
-		}
-		_, _ = w.Write([]byte("ready\n"))
+		_, _ = w.Write([]byte(r + "\n"))
 	})
 }
 

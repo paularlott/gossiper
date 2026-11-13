@@ -42,7 +42,7 @@ tasks:
     deps: [all]
 
   webassets:
-    desc: Build the API description and reference (web/dist, embedded in the binary) with Node.js
+    desc: Build the API description and reference, and the status page (web/dist, embedded in the binary) with Node.js
     dir: web
     run: once # several tasks depend on it, in parallel: one npm ci at a time
     cmds:
@@ -51,6 +51,7 @@ tasks:
     sources:
       - openapi/**/*
       - api-docs/**/*
+      - ui/**/*
       - src/**/*
       - vite.config.js
       - redocly.yaml
@@ -58,6 +59,7 @@ tasks:
       - package-lock.json
     generates:
       - dist/openapi.json
+      - dist/ui/index.html
 
   apidocs-lint:
     desc: Lint the OpenAPI description (web/openapi/openapi.yaml) with Redocly CLI
@@ -296,7 +298,8 @@ tasks:
           echo "Hub:        https://localhost:8080/.well-known/mercure   (tenant \"dev\", examples/dev/tenants.json)"
           echo "Token:      go run {{.MAIN}} token --modern --key {{.DEV_KEY}} --publish '*' --subscribe '*'"
           echo "Admin API:  curl --cacert data/tls/self-signed.crt -H 'Authorization: Bearer {{.API_TOKEN}}' https://localhost:9090/api/tenants"
-          echo "API docs:   https://localhost:9090/api-docs/   (accept the self-signed certificate)"
+          echo "Status:     https://localhost:9090/   (accept the self-signed certificate)"
+          echo "API docs:   https://localhost:9090/api-docs/"
           echo "Metrics:    https://localhost:9090/metrics"
           echo "Profiling:  https://localhost:9090/debug/pprof/"
           echo "Database:   data/dev.db (delete it to start over); certificate: data/tls/self-signed.crt"

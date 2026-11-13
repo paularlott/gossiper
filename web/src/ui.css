@@ -1,0 +1,24 @@
+/* The status page's styles: Tailwind CSS, scanning the page and its script only. */
+@import "tailwindcss" source(none);
+@source "../ui/index.html";
+@source "./ui.js";
+
+/* Dark is a class on <html> (the page starts dark; the toggle switches it), not the OS preference. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+[x-cloak] { display: none !important; }
+
+@layer components {
+  .card { @apply rounded-lg border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900; }
+  .text-muted { @apply text-slate-600 dark:text-slate-400; }
+  .badge { @apply inline-block rounded-full px-2 py-0.5 text-xs font-medium; }
+  .btn {
+    @apply inline-flex items-center rounded-md border border-slate-300 p-1.5 text-slate-700 hover:bg-slate-200
+      focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-600
+      dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800 dark:focus-visible:outline-sky-400;
+  }
+  .ok { @apply bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300; }
+  .warn { @apply bg-amber-100 text-amber-900 dark:bg-amber-500/15 dark:text-amber-300; }
+  .bad { @apply bg-red-100 text-red-800 dark:bg-red-500/15 dark:text-red-300; }
+  .idle { @apply bg-slate-200 text-slate-700 dark:bg-slate-700/50 dark:text-slate-300; }
+}
