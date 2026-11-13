@@ -77,6 +77,7 @@ func (s *Server) resolveTenants(list func(string) []configstore.Record, check fu
 			e.bad = "unreadable record"
 		}
 		e.spec, e.created = st.Spec, st.Created
+		e.spec.previous = st.Previous
 		recs = append(recs, e)
 	}
 	slices.SortFunc(recs, func(a, b entry) int {
@@ -107,10 +108,18 @@ func (s *Server) resolveTenants(list func(string) []configstore.Record, check fu
 	return out, problems
 }
 
+// recordKey identifies a spec, its previous keys included, for the check cache.
+func recordKey(t tenantSpec) string {
+	if t.previous == nil {
+		return string(specJSON(t))
+	}
+	return string(specJSON(t)) + "\x00" + string(specJSON(t.previous))
+}
+
 // checkRecord is a database tenant's own check: the tenants file's rules, and its hub's settings, keys parsed. Each
 // spec is checked once.
 func (s *Server) checkRecord(t tenantSpec) error {
-	key := string(specJSON(t))
+	key := recordKey(t)
 	if err, ok := s.checked.get(key); ok {
 		return err
 	}
@@ -126,7 +135,7 @@ func (s *Server) checkRecord(t tenantSpec) error {
 // knownProblem is checkRecord without checking any hub's settings: the result of the last check of the spec, or
 // the tenants file's rules alone when it has none. The API reads and writes with it.
 func (s *Server) knownProblem(t tenantSpec) error {
-	if err, ok := s.checked.get(string(specJSON(t))); ok {
+	if err, ok := s.checked.get(recordKey(t)); ok {
 		return err
 	}
 	return checkSpec(t)
@@ -209,7 +218,11 @@ func (c *clashes) add(t tenantSpec) error {
 		}
 	}
 	var keys []string
-	for _, v := range []string{m.PublisherKey, m.PublisherJWKSURL, m.SubscriberKey, m.SubscriberJWKSURL} {
+	material := []string{m.PublisherKey, m.PublisherJWKSURL, m.SubscriberKey, m.SubscriberJWKSURL}
+	if p := t.previous.active(time.Now()); p != nil { // a replaced key still accepted is the tenant's too
+		material = append(material, p.PublisherKey, p.SubscriberKey)
+	}
+	for _, v := range material {
 		if v == "" {
 			continue
 		}
@@ -342,7 +355,7 @@ func (s *Server) applyMercure(all []tenantSpec) {
 	}
 	pending := map[string]tenantSpec{}
 	for name, t := range want {
-		if old, ok := s.mercureApplied[name]; !ok || old.created != t.created || !sameJSON(old, t) {
+		if old, ok := s.mercureApplied[name]; !ok || old.created != t.created || !sameJSON(old, t) || !sameJSON(old.previous, t.previous) {
 			pending[name] = t
 		}
 	}
@@ -371,7 +384,7 @@ func (s *Server) applyMercure(all []tenantSpec) {
 				defer func() { <-slots }()
 				var err error
 				// A tenant created again (another created) is a new tenant: Set replaces it, history and all.
-				if had && old.created == t.created && sameJSON(old.Mercure, t.Mercure) {
+				if had && old.created == t.created && sameJSON(old.Mercure, t.Mercure) && sameJSON(old.previous, t.previous) {
 					err = s.Tenants.SetHosts(name, t.Hosts)
 				} else {
 					err = s.Tenants.Set(mercureTenants(s.baseConfig, []tenantSpec{t})[0])

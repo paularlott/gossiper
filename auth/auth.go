@@ -69,6 +69,12 @@ type KeyConfig struct {
 	Algorithm string
 	// JWKSURL is an alternative to Key: keys are fetched from this JWK Set URL.
 	JWKSURL string
+	// PreviousKey is a key Key replaced (an HMAC secret or a PEM public key, as Key), still accepted until
+	// PreviousUntil: tokens signed with either verify while clients move to the new key. Only with Key; ignored once
+	// PreviousUntil has passed (zero: never accepted).
+	PreviousKey string
+	// PreviousUntil is when PreviousKey stops being accepted.
+	PreviousUntil time.Time
 	// JWKSRefresh is the background refresh interval. Default 10 minutes.
 	JWKSRefresh time.Duration
 	// HTTPClient is used to fetch the JWK Set. Default: a client with a 10s timeout.
@@ -164,12 +170,20 @@ func CheckKey(cfg KeyConfig) (weak bool, err error) {
 	if _, _, err := verifierKey(cfg); err != nil {
 		return false, err
 	}
+	if cfg.PreviousKey != "" {
+		if _, _, err := verifierKey(previousConfig(cfg)); err != nil {
+			return false, fmt.Errorf("previous key: %w", err)
+		}
+	}
 	return WeakSecret(cfg), nil
 }
 
 func checkConfig(cfg KeyConfig) error {
 	if (cfg.Key == "") == (cfg.JWKSURL == "") {
 		return errors.New("auth: exactly one of Key and JWKSURL must be set")
+	}
+	if cfg.PreviousKey != "" && cfg.Key == "" {
+		return errors.New("auth: PreviousKey needs Key")
 	}
 	if cfg.Leeway < 0 {
 		return errors.New("auth: negative Leeway")
@@ -189,6 +203,13 @@ func jwksMethods(cfg KeyConfig) ([]string, error) {
 		return nil, fmt.Errorf("auth: unsupported algorithm %q", cfg.Algorithm)
 	}
 	return []string{cfg.Algorithm}, nil
+}
+
+// previousConfig is cfg with its PreviousKey as the key, for verifierKey: the algorithm is Algorithm when set, or
+// the previous key's own.
+func previousConfig(cfg KeyConfig) KeyConfig {
+	cfg.Key, cfg.PreviousKey = cfg.PreviousKey, ""
+	return cfg
 }
 
 // verifierKey returns a static key's algorithm and the key to verify with: the secret, or the parsed public key.
@@ -240,12 +261,32 @@ func newVerifier(cfg KeyConfig, o internalOpts) (*Verifier, error) {
 	if err != nil {
 		return nil, err
 	}
+	methods := []string{alg}
+	var prev any
+	if cfg.PreviousKey != "" {
+		palg, pkey, err := verifierKey(previousConfig(cfg))
+		if err != nil {
+			return nil, fmt.Errorf("auth: previous key: %w", err)
+		}
+		prev = pkey
+		if palg != alg {
+			methods = append(methods, palg)
+		}
+	}
+	now := o.now
+	if now == nil {
+		now = time.Now
+	}
+	until := cfg.PreviousUntil
 	v := &Verifier{
-		parser: jwt.NewParser(jwt.WithValidMethods([]string{alg}), jwt.WithLeeway(cfg.Leeway)),
+		parser: jwt.NewParser(jwt.WithValidMethods(methods), jwt.WithLeeway(cfg.Leeway)),
 		weak:   WeakSecret(cfg),
 		keyfn: func(t *jwt.Token) (any, error) {
 			if _, ok := t.Header["crit"]; ok {
 				return nil, &keyError{msg: "unsupported crit header"}
+			}
+			if prev != nil && now().Before(until) { // rotating: the replaced key still verifies
+				return jwt.VerificationKeySet{Keys: []jwt.VerificationKey{key, prev}}, nil
 			}
 			return key, nil
 		},

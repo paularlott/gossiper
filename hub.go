@@ -239,7 +239,7 @@ func (h *Hub) accessVerifier(key auth.KeyConfig) (*auth.AccessVerifier, error) {
 	var issuers []auth.Issuer
 	if hasKey(key) {
 		for _, iss := range cfg.TrustedIssuers {
-			is := auth.Issuer{Issuer: iss, Key: key.Key, JWKSURL: key.JWKSURL}
+			is := auth.Issuer{Issuer: iss, Key: key.Key, JWKSURL: key.JWKSURL, PreviousKey: key.PreviousKey, PreviousUntil: key.PreviousUntil}
 			if key.Algorithm != "" {
 				is.Algorithms = []string{key.Algorithm}
 			}

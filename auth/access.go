@@ -49,6 +49,11 @@ type Issuer struct {
 	Algorithms []string
 	// JWKSURL is the issuer's JWK Set URL.
 	JWKSURL string
+	// PreviousKey is a key Key replaced, still accepted until PreviousUntil (rotation): tokens signed with either
+	// verify. Only with Key; ignored once PreviousUntil has passed.
+	PreviousKey string
+	// PreviousUntil is when PreviousKey stops being accepted.
+	PreviousUntil time.Time
 	// Discover finds the JWK Set URL through the issuer's metadata (RFC 8414,
 	// then OpenID Connect discovery); the metadata's issuer must equal Issuer.
 	Discover bool
@@ -95,12 +100,14 @@ var defaultAccessAlgs = []string{
 }
 
 type accessIssuer struct {
-	id     string
-	algs   map[string]struct{}
-	static any         // []byte or public key; nil with jwks
-	jwks   *jwksSource // nil with a static key
-	target *jwksTarget // how to create jwks; consumed by start
-	opts   internalOpts
+	id            string
+	algs          map[string]struct{}
+	static        any // []byte or public key; nil with jwks
+	previous      any // a replaced static key, accepted until previousUntil; nil when none
+	previousUntil time.Time
+	jwks          *jwksSource // nil with a static key
+	target        *jwksTarget // how to create jwks; consumed by start
+	opts          internalOpts
 }
 
 // AccessVerifier verifies draft-08 access tokens (RFC 9068 JWTs carrying
@@ -212,6 +219,9 @@ func buildIssuer(cfg AccessConfig, is Issuer, client *http.Client, o internalOpt
 	if n != 1 {
 		return nil, fmt.Errorf("auth: issuer %q: exactly one of Key, JWKSURL and Discover must be set", is.Issuer)
 	}
+	if is.PreviousKey != "" && is.Key == "" {
+		return nil, fmt.Errorf("auth: issuer %q: PreviousKey needs Key", is.Issuer)
+	}
 	ai := &accessIssuer{id: is.Issuer}
 
 	explicit := map[string]struct{}{}
@@ -239,6 +249,23 @@ func buildIssuer(cfg AccessConfig, is Issuer, client *http.Client, o internalOpt
 			if _, ok := ai.algs[a]; !ok {
 				return nil, fmt.Errorf("auth: issuer %q: %s key does not match algorithm %s", is.Issuer, describeKey(key), a)
 			}
+		}
+		if is.PreviousKey != "" {
+			prev, err := staticKey(Issuer{Issuer: is.Issuer, Key: is.PreviousKey}, explicit)
+			if err != nil {
+				return nil, fmt.Errorf("auth: issuer %q: previous key: %w", is.Issuer, err)
+			}
+			matched := false
+			for _, a := range defaultAccessAlgs {
+				if _, ok := explicit[a]; (len(explicit) == 0 || ok) && keyMatchesAlg(prev, a) {
+					ai.algs[a] = struct{}{}
+					matched = true
+				}
+			}
+			if !matched {
+				return nil, fmt.Errorf("auth: issuer %q: previous %s key matches none of the algorithms", is.Issuer, describeKey(prev))
+			}
+			ai.previous, ai.previousUntil = prev, is.PreviousUntil
 		}
 	default:
 		ai.algs = explicit
@@ -453,6 +480,9 @@ func (v *AccessVerifier) keyFor(ctx context.Context, t *jwt.Token, tc *accessTok
 	}
 	if ai.jwks != nil {
 		return ai.jwks.keyFor(ctx, t)
+	}
+	if ai.previous != nil && v.now().Before(ai.previousUntil) { // rotating: the replaced key still verifies
+		return jwt.VerificationKeySet{Keys: []jwt.VerificationKey{ai.static, ai.previous}}, nil
 	}
 	return ai.static, nil
 }

@@ -73,6 +73,8 @@ var adminRouteList = []adminRoute{
 	{"GET", "/api/tenants/{tenant}", (*adminAPI).getTenant},
 	{"PUT", "/api/tenants/{tenant}", (*adminAPI).putTenant},
 	{"DELETE", "/api/tenants/{tenant}", (*adminAPI).deleteTenant},
+	{"POST", "/api/tenants/{tenant}/rotate", (*adminAPI).rotateKeys},
+	{"DELETE", "/api/tenants/{tenant}/previous-keys", (*adminAPI).dropPreviousKeys},
 	{"GET", "/api/status", (*adminAPI).status},
 }
 
@@ -304,6 +306,8 @@ func (l *failLimiter) fail(ip string) {
 type storedTenant struct {
 	Spec    tenantSpec `json:"spec"`
 	Created int64      `json:"created"`
+	// Previous are the keys a rotation replaced, still accepted until their time.
+	Previous *previousKeys `json:"previous,omitempty"`
 }
 
 // tenantView is a tenant as the API shows it: secrets left out.
@@ -319,6 +323,9 @@ type mercureView struct {
 	tenantMercure
 	PublisherKeySet  bool `json:"publisher_key_set,omitempty"`
 	SubscriberKeySet bool `json:"subscriber_key_set,omitempty"`
+	// When the previous keys of a rotation stop being accepted (absent: none is).
+	PublisherPreviousKeyUntil  *time.Time `json:"publisher_previous_key_until,omitempty"`
+	SubscriberPreviousKeyUntil *time.Time `json:"subscriber_previous_key_until,omitempty"`
 }
 
 // isPublicKey reports whether a Mercure key is a PEM public key, which may be shown, rather than an HMAC secret.
@@ -338,6 +345,16 @@ func viewTenant(t tenantSpec, fromFile bool, problem string) tenantView {
 		}
 		if m.SubscriberKey != "" && !isPublicKey(m.SubscriberKey) {
 			mv.SubscriberKey, mv.SubscriberKeySet = "", true
+		}
+		if p := t.previous.active(time.Now()); p != nil {
+			if p.PublisherKey != "" {
+				u := time.Unix(0, p.PublisherUntil).UTC()
+				mv.PublisherPreviousKeyUntil = &u
+			}
+			if p.SubscriberKey != "" {
+				u := time.Unix(0, p.SubscriberUntil).UTC()
+				mv.SubscriberPreviousKeyUntil = &u
+			}
 		}
 		v.Mercure = mv
 	}
@@ -365,6 +382,7 @@ func (a *adminAPI) tenants() []tenantView {
 		if json.Unmarshal(r.Value, &st) != nil || served[st.Spec.Name] {
 			continue
 		}
+		st.Spec.previous = st.Previous
 		out = append(out, viewTenant(st.Spec, false, why[st.Spec.Name]))
 	}
 	return out
@@ -481,6 +499,7 @@ func (a *adminAPI) writeTenant(ctx context.Context, in tenantSpec, create bool) 
 	var isNew bool
 	err := a.change(ctx, func(tx *configstore.Tx) error {
 		created := time.Now().UnixNano()
+		var previous *previousKeys
 		if old, ok := tx.Get(tenantKey(in.Name)); ok {
 			if create {
 				return fail(http.StatusConflict, "tenant %q exists", in.Name)
@@ -488,17 +507,180 @@ func (a *adminAPI) writeTenant(ctx context.Context, in tenantSpec, create bool) 
 			var st storedTenant
 			if json.Unmarshal(old.Value, &st) == nil {
 				created = st.Created
+				previous = keptPrevious(st, in)
 			}
 		} else {
 			isNew = true
 		}
-		tx.Put(tenantKey(in.Name), specJSON(storedTenant{Spec: in, Created: created}))
+		tx.Put(tenantKey(in.Name), specJSON(storedTenant{Spec: in, Created: created, Previous: previous}))
 		return nil
 	})
 	if err == nil {
 		a.s.log.Info(map[bool]string{true: "tenant created", false: "tenant changed"}[isNew], "tenant", in.Name)
 	}
 	return isNew, err
+}
+
+// keptPrevious is what a replacement of st by in keeps of its previous keys: a key's previous key while that key is
+// unchanged (a PUT that changes a key replaces it at once: rotate to keep the old one a while).
+func keptPrevious(st storedTenant, in tenantSpec) *previousKeys {
+	p := st.Previous.active(time.Now())
+	if p == nil || st.Spec.Mercure == nil || in.Mercure == nil {
+		return nil
+	}
+	out := *p
+	if in.Mercure.PublisherKey != st.Spec.Mercure.PublisherKey {
+		out.PublisherKey, out.PublisherUntil = "", 0
+	}
+	if in.Mercure.SubscriberKey != st.Spec.Mercure.SubscriberKey {
+		out.SubscriberKey, out.SubscriberUntil = "", 0
+	}
+	return out.active(time.Now())
+}
+
+// maxGrace bounds how long a rotated key stays accepted.
+const maxGrace = 7 * 24 * time.Hour
+
+// defaultGrace is how long a rotated key stays accepted when the request does not say.
+const defaultGrace = time.Hour
+
+// rotateRequest is the body of POST /api/tenants/{tenant}/rotate.
+type rotateRequest struct {
+	PublisherKey  string `json:"publisher_key,omitempty"`
+	SubscriberKey string `json:"subscriber_key,omitempty"`
+	Grace         string `json:"grace,omitempty"`
+}
+
+// rotateKeys replaces a database tenant's publisher or subscriber key, or both, keeping each replaced key accepted for
+// the grace period (default an hour; "0s" replaces it at once). Every node applies it without a restart: the tenant's
+// hub starts over with both keys, so its subscribers reconnect, with Last-Event-ID and the tokens they hold.
+func (a *adminAPI) rotateKeys(w http.ResponseWriter, r *http.Request) error {
+	name := r.PathValue("tenant")
+	var in rotateRequest
+	if err := decode(r, &in); err != nil {
+		return err
+	}
+	if in.PublisherKey == "" && in.SubscriberKey == "" {
+		return fail(http.StatusBadRequest, "give publisher_key, subscriber_key or both: the new keys")
+	}
+	grace := defaultGrace
+	if in.Grace != "" {
+		d, err := time.ParseDuration(in.Grace)
+		if err != nil || d < 0 || d > maxGrace {
+			return fail(http.StatusBadRequest, "grace: a duration from 0s to %s, e.g. 1h", maxGrace)
+		}
+		grace = d
+	}
+	if a.s.fileTenant(name) {
+		var exists bool
+		_ = a.s.store.Update(r.Context(), func(tx *configstore.Tx) error { _, exists = tx.Get(tenantKey(name)); return nil })
+		if !exists {
+			return fail(http.StatusConflict, "tenant %q is defined in the tenants file: change its keys there", name)
+		}
+	}
+	until := time.Now().Add(grace).UnixNano()
+	err := a.change(r.Context(), func(tx *configstore.Tx) error {
+		rec, ok := tx.Get(tenantKey(name))
+		if !ok {
+			return fail(http.StatusNotFound, "no tenant %q", name)
+		}
+		var st storedTenant
+		if err := json.Unmarshal(rec.Value, &st); err != nil || st.Spec.Mercure == nil {
+			return fail(http.StatusConflict, "tenant %q: unreadable record", name)
+		}
+		spec := st.Spec
+		m := *spec.Mercure
+		prev := st.Previous.active(time.Now())
+		if prev == nil {
+			prev = &previousKeys{}
+		}
+		if k := in.PublisherKey; k != "" {
+			if m.PublisherJWKSURL != "" {
+				return fail(http.StatusBadRequest, "tenant %q takes its publisher keys from a key set: rotate them there, or PUT a publisher_key", name)
+			}
+			if k == m.PublisherKey {
+				return fail(http.StatusBadRequest, "publisher_key: the tenant's key already")
+			}
+			if m.SubscriberKey == "" && in.SubscriberKey == "" && m.SubscriberJWKSURL == "" {
+				// Its subscribers' tokens are signed with the publisher key too: the replaced one stays theirs as well.
+				prev.SubscriberKey, prev.SubscriberUntil = "", 0
+			}
+			prev.PublisherKey, prev.PublisherUntil = m.PublisherKey, until
+			m.PublisherKey = k
+		}
+		if k := in.SubscriberKey; k != "" {
+			if m.SubscriberJWKSURL != "" {
+				return fail(http.StatusBadRequest, "tenant %q takes its subscriber keys from a key set: rotate them there, or PUT a subscriber_key", name)
+			}
+			if k == m.SubscriberKey {
+				return fail(http.StatusBadRequest, "subscriber_key: the tenant's key already")
+			}
+			// A tenant without a subscriber key signs its subscribers' tokens with the publisher key: that one is
+			// the subscribers' previous key now.
+			old := m.SubscriberKey
+			if old == "" {
+				old = st.Spec.Mercure.PublisherKey
+			}
+			prev.SubscriberKey, prev.SubscriberUntil = old, until
+			m.SubscriberKey = k
+		}
+		if grace == 0 {
+			if in.PublisherKey != "" {
+				prev.PublisherKey, prev.PublisherUntil = "", 0
+			}
+			if in.SubscriberKey != "" {
+				prev.SubscriberKey, prev.SubscriberUntil = "", 0
+			}
+		}
+		spec.Mercure = &m
+		spec.previous = prev.active(time.Now())
+		if err := a.s.checkKeys(spec); err != nil {
+			return fail(http.StatusBadRequest, "%v", err)
+		}
+		if err := a.s.checkRecord(spec); err != nil {
+			return fail(http.StatusBadRequest, "%v", err)
+		}
+		tx.Put(tenantKey(name), specJSON(storedTenant{Spec: spec, Created: st.Created, Previous: spec.previous}))
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	a.s.log.Info("tenant keys rotated", "tenant", name, "grace", grace.String())
+	t, _ := a.tenant(name)
+	writeJSON(w, http.StatusOK, t)
+	return nil
+}
+
+// dropPreviousKeys ends a rotation's grace period at once: the replaced keys stop being accepted, and the tenant's
+// hub starts over, ending the streams opened with them.
+func (a *adminAPI) dropPreviousKeys(w http.ResponseWriter, r *http.Request) error {
+	name := r.PathValue("tenant")
+	err := a.change(r.Context(), func(tx *configstore.Tx) error {
+		rec, ok := tx.Get(tenantKey(name))
+		if !ok {
+			if a.s.fileTenant(name) {
+				return fail(http.StatusConflict, "tenant %q is defined in the tenants file", name)
+			}
+			return fail(http.StatusNotFound, "no tenant %q", name)
+		}
+		var st storedTenant
+		if err := json.Unmarshal(rec.Value, &st); err != nil {
+			return fail(http.StatusConflict, "tenant %q: unreadable record", name)
+		}
+		if st.Previous == nil {
+			return nil
+		}
+		st.Previous = nil
+		tx.Put(tenantKey(name), specJSON(st))
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	a.s.log.Info("tenant previous keys dropped", "tenant", name)
+	w.WriteHeader(http.StatusNoContent)
+	return nil
 }
 
 // change runs fn on the database, and keeps what it wrote only when the tenants still fit together: a change that

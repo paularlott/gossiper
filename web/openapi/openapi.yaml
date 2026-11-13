@@ -96,6 +96,8 @@ paths:
         Create the tenant, or replace its hosts and Mercure settings. A name in the body, if any, must be the one in the path.
 
         Changing a tenant's Mercure keys or settings restarts its hub on every node: open subscriber streams end and clients reconnect (with Last-Event-ID, missing nothing the hub's history still holds). Changing only its hosts keeps the streams open.
+
+        A key changed here is replaced at once: tokens signed with the old one are refused from then on. To keep the old key accepted while clients move to the new one, use `POST /api/tenants/{tenant}/rotate`. A PUT that keeps a key keeps its previous key from a rotation.
       operationId: put_tenant
       requestBody:
         required: true
@@ -127,6 +129,52 @@ paths:
       responses:
         "204":
           description: Deleted
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "429": {$ref: "#/components/responses/TooManyRequests"}
+  /api/tenants/{tenant}/rotate:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+    post:
+      tags: [Tenants]
+      summary: Rotate a tenant's keys
+      description: |-
+        Replace the tenant's publisher key, subscriber key or both, and keep each replaced key accepted for a grace period, so clients can move to the new key without failing. Every node applies it at once, without a restart: the tenant's hub starts over with both keys, its subscribers reconnect with Last-Event-ID and the tokens they hold.
+
+        A tenant without a subscriber key signs its subscribers' tokens with the publisher key: rotating the publisher key keeps the old one accepted for subscribers too. Rotating again during a grace period replaces the previous key with the key being replaced. A grace of `0s` replaces the key at once, as a PUT does.
+
+        Streams opened with a previous key end when their token expires; `DELETE /api/tenants/{tenant}/previous-keys` ends the grace period, and those streams, at once. Keys from a key set URL rotate in the key set, not here (400); a tenant of the tenants file is changed in the file (409).
+      operationId: rotate_tenant_keys
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/RotateInput"}
+      responses:
+        "200":
+          description: Rotated
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Tenant"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "429": {$ref: "#/components/responses/TooManyRequests"}
+  /api/tenants/{tenant}/previous-keys:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+    delete:
+      tags: [Tenants]
+      summary: End a rotation's grace period
+      description: The keys a rotation replaced stop being accepted at once, on every node, and the tenant's hub starts over, ending the streams opened with them. Answers 204 whether or not there were any.
+      operationId: drop_tenant_previous_keys
+      responses:
+        "204":
+          description: No previous key is accepted any longer
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
@@ -337,6 +385,29 @@ components:
             subscriber_key_set:
               type: boolean
               description: An HMAC subscriber key is set (it is not returned)
+            publisher_previous_key_until:
+              type: string
+              format: date-time
+              description: A rotation's previous publisher key is accepted until then (absent when none is)
+            subscriber_previous_key_until:
+              type: string
+              format: date-time
+              description: A rotation's previous subscriber key is accepted until then (absent when none is)
+    RotateInput:
+      type: object
+      additionalProperties: false
+      description: The new keys (at least one), each an HMAC secret or a PEM public key, as in a tenant's Mercure settings.
+      properties:
+        publisher_key:
+          type: string
+          description: The new publisher key
+        subscriber_key:
+          type: string
+          description: The new subscriber key
+        grace:
+          type: string
+          description: How long each replaced key stays accepted, a duration from `0s` to `168h` (default `1h`)
+          example: 24h
     Status:
       type: object
       required: [node, records, tombstones, tenants]

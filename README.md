@@ -12,7 +12,7 @@ Gossiper is a clustered, multi-tenant [Mercure](https://datatracker.ietf.org/doc
 - **Both protocol revisions:** Mercure 1.0 by default, and draft-07 alongside it with `--protocol both`.
 - **Drop-in for Mercure clients:** Symfony, API Platform, FrankenPHP apps, Laravel broadcasters, a browser `EventSource`.
 - **Fast for services:** a streaming publish carries updates at more than ten times the rate of a POST each.
-- **Multi-tenant:** tenants with their own hubs and keys, picked by host name, managed live through an admin API.
+- **Multi-tenant:** tenants with their own hubs and keys, picked by host name, managed live through an admin API, keys rotated without downtime.
 - **Clustered with [gossip](https://github.com/paularlott/gossip):** identical nodes behind a load balancer; no sticky sessions, no Redis.
 - **Copies on demand:** a publish can wait until several nodes hold it, and is then idempotent by its ID.
 - **One static binary,** or a Go package to embed. MIT licensed, a clean-room implementation.

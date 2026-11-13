@@ -56,11 +56,27 @@ curl -H "Authorization: Bearer $ADMIN_TOKEN" -X DELETE https://events.example/ap
 `POST /api/tenants` creates a tenant (409 if the name is taken), `PUT /api/tenants/{name}` creates or replaces one, `GET` lists or reads them, and `DELETE` removes one. `GET /api/status` shows the database and its replication. The OpenAPI document is at `/api/openapi.json` and its reference at `/api-docs/`, built into release binaries and the container image.
 
 - **Every node applies a change at once.** Each node's database replicates over the cluster's gossip network, and a node that was down catches up when it returns. Give every node a database. Concurrent changes to one tenant settle on the later one.
-- **Live.** A new tenant's hub is ready within milliseconds. Changing a tenant's keys restarts its hub (subscribers reconnect with `Last-Event-ID`); changing only its hosts keeps streams open.
+- **Live.** A new tenant's hub is ready within milliseconds. Changing a tenant's keys restarts its hub (subscribers reconnect with `Last-Event-ID`); changing only its hosts keeps streams open. To change keys without refusing clients' current tokens, [rotate them](#rotating-keys).
 - **Delete cleans up.** Deleting a tenant closes its streams and deletes its history, in memory and in `--history-db`, on every node. A tenant created again under the same name starts empty, even on a node that was down while it was deleted. Deletions are remembered, so a returning node does not bring a deleted tenant back.
 - **Validation.** An invalid tenant gets 400. One that clashes with another tenant (a host, a key, or a name in the tenants file) gets 409 and changes nothing. Tenants from the file are shown read-only and cannot be changed or deleted here. Changes are logged.
 - **Secrets are write-only.** HMAC keys are never returned, so a `PUT` must carry them again. The database holds them as given (deleted ones are wiped from the file): protect it like the tenants file.
 - **Limits.** Failed authentications are limited to 60 per address and minute. With a bcrypt-hashed `--api-token`, at most four comparisons run at once; further requests get 429.
+
+### Rotating keys
+
+A `PUT` with a new key replaces it at once: tokens signed with the old key are refused from then on. To rotate without breaking clients, keep the old key accepted while they move to the new one:
+
+```bash
+curl -H "Authorization: Bearer $ADMIN_TOKEN" -X POST https://events.example/api/tenants/acme/rotate \
+  -d '{"publisher_key": "'"$(gossiper genkey)"'", "grace": "24h"}'
+```
+
+- **Both keys work during the grace period** (default `1h`, at most `168h`; `0s` replaces the key at once). Give `publisher_key`, `subscriber_key` or both. The tenant's view shows `publisher_previous_key_until` and `subscriber_previous_key_until` while a previous key is accepted.
+- **No restart.** Every node applies it within moments. The tenant's hub starts over with both keys, so its subscribers reconnect with `Last-Event-ID` and the tokens they already hold.
+- **Subscribers too.** A tenant without a subscriber key signs its subscribers' tokens with the publisher key, so rotating the publisher key keeps their tokens good for the grace period.
+- **The grace period ends by itself**, or at once with `DELETE /api/tenants/acme/previous-keys` (for a leaked key): the old key is refused, and the tenant's streams start over, ending those opened with it. Without that, a stream opened with the old key ends when its token expires.
+- **A previous key is still the tenant's:** no other tenant can take it until the grace period ends. A `PUT` that keeps a key keeps its previous key; one that changes the key drops it.
+- Keys from a key set URL (`publisher_jwks_url`) rotate in the key set itself. Tenants from the tenants file change in the file.
 
 ### Signing in with an identity provider
 

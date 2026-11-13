@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/paularlott/gossip/hlc"
+	"github.com/paularlott/gossiper/auth"
 
 	"github.com/paularlott/logger"
 )
@@ -236,7 +237,9 @@ func validateTenants(tenants []Tenant, withConfigs bool) error {
 				return fmt.Errorf("tenants: tenant %q: %w", t.Name, err)
 			}
 		}
-		material := []string{t.Config.PublisherKey.Key, t.Config.PublisherKey.JWKSURL, t.Config.SubscriberKey.Key, t.Config.SubscriberKey.JWKSURL}
+		// A previous key (rotation) is the tenant's as much as its current one while it is accepted.
+		material := []string{t.Config.PublisherKey.Key, t.Config.PublisherKey.JWKSURL, activePrevious(t.Config.PublisherKey),
+			t.Config.SubscriberKey.Key, t.Config.SubscriberKey.JWKSURL, activePrevious(t.Config.SubscriberKey)}
 		for _, is := range t.Config.Issuers {
 			material = append(material, is.Key, is.JWKSURL)
 			if is.Key != "" || is.JWKSURL != "" { // an issuer with keys of its own is told apart by them
@@ -450,6 +453,14 @@ func (ts *Tenants) Remove(ctx context.Context, name string) error {
 		}
 	}
 	return err
+}
+
+// activePrevious is k's previous key while it is accepted, or "".
+func activePrevious(k auth.KeyConfig) string {
+	if k.PreviousKey == "" || !time.Now().Before(k.PreviousUntil) {
+		return ""
+	}
+	return k.PreviousKey
 }
 
 // sinceStamp is a Tenant's Since as a hub holds it: an HLC stamp, 0 for none.

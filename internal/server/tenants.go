@@ -28,6 +28,35 @@ type tenantSpec struct {
 	// created is when a database tenant was created, in Unix nanoseconds (0 for the file's): a tenant deleted and
 	// created again has another, and is a new tenant (gossiper.Tenant.Since). Not part of the spec's JSON.
 	created int64
+	// previous holds the keys a rotation replaced, still accepted for a while (from the database record; nil for none).
+	previous *previousKeys
+}
+
+// previousKeys are a database tenant's replaced keys, each accepted until its time (Unix nanoseconds), so that
+// clients can move to the new key: POST /api/tenants/{tenant}/rotate sets them.
+type previousKeys struct {
+	PublisherKey    string `json:"publisher_key,omitempty"`
+	PublisherUntil  int64  `json:"publisher_until,omitempty"`
+	SubscriberKey   string `json:"subscriber_key,omitempty"`
+	SubscriberUntil int64  `json:"subscriber_until,omitempty"`
+}
+
+// active returns p without the keys whose time has passed at now, or nil when none is left.
+func (p *previousKeys) active(now time.Time) *previousKeys {
+	if p == nil {
+		return nil
+	}
+	out := *p
+	if out.PublisherUntil <= now.UnixNano() {
+		out.PublisherKey, out.PublisherUntil = "", 0
+	}
+	if out.SubscriberUntil <= now.UnixNano() {
+		out.SubscriberKey, out.SubscriberUntil = "", 0
+	}
+	if out.PublisherKey == "" && out.SubscriberKey == "" {
+		return nil
+	}
+	return &out
 }
 
 // tenantMercure is a tenant's Mercure hub settings; the rest are the server's.
@@ -168,6 +197,14 @@ func mercureTenants(base gossiper.Config, specs []tenantSpec) []gossiper.Tenant 
 		}
 		if m.AccessTokenCookieName != "" {
 			cfg.AccessTokenCookieName = m.AccessTokenCookieName
+		}
+		if p := t.previous; p != nil { // a rotation's replaced keys, accepted until their time
+			if p.PublisherKey != "" {
+				cfg.PublisherKey.PreviousKey, cfg.PublisherKey.PreviousUntil = p.PublisherKey, time.Unix(0, p.PublisherUntil)
+			}
+			if p.SubscriberKey != "" {
+				cfg.SubscriberKey.PreviousKey, cfg.SubscriberKey.PreviousUntil = p.SubscriberKey, time.Unix(0, p.SubscriberUntil)
+			}
 		}
 		tenant := gossiper.Tenant{Name: t.Name, Hosts: t.Hosts, Config: cfg}
 		if t.created != 0 {
