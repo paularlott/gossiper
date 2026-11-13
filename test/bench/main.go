@@ -50,6 +50,9 @@ var (
 	quiet       = flag.Duration("quiet", 10*time.Second, "how long a workload waits for an event before it counts what is missing as lost")
 	streamProto = flag.String("stream-proto", "h1", "protocol of the Go client's streaming publish: h1, or h2c (HTTP/2 without TLS)")
 	httpOnly    = flag.Bool("http-only", false, "run only the HTTP POST and SSE workloads (for a hub without streaming publishes; no services suite)")
+	fanVia      = flag.String("fan-via", "both", "publishers of the fan-out workloads: http, stream or both")
+	fanClients  = flag.Int("fan-stream-clients", 1, "Go clients (publish streams) of the streaming fan-out workloads")
+	tenants     = flag.Bool("tenants", false, "run the hubs it starts in multi-tenant mode: one tenant, at host 127.0.0.1")
 
 	worker          = flag.Bool("sub-worker", false, "internal: run subscribers for the parent process")
 	workerSubs      = flag.Int("worker-subs", 0, "internal")
@@ -168,10 +171,19 @@ func startGossiper(dir string, n int) ([]*node, error) {
 		hp, gp := freePort(), freePort()
 		nd := &node{name: fmt.Sprintf("gossiper-%d", i+1), http: fmt.Sprintf("http://127.0.0.1:%d", hp)}
 		// --protocol both: the benchmark speaks draft-07 unless -issuer and -sub-param match say otherwise.
-		args := []string{"serve", "--listen", fmt.Sprintf("127.0.0.1:%d", hp), "--http-only", "--anonymous", "--publisher-key", secret,
-			"--protocol", "both",
+		args := []string{"serve", "--listen", fmt.Sprintf("127.0.0.1:%d", hp), "--http-only", "--protocol", "both",
 			"--log-level", "warn", "--pprof", "--admin-listen", fmt.Sprintf("127.0.0.1:%d", freePort()),
 			"--max-subscribers-per-ip", "0"} // the subscribers all come from this machine
+		if *tenants { // one tenant, reached at the address the benchmark uses
+			f := filepath.Join(dir, "tenants.json")
+			tf := `{"tenants":[{"name":"bench","hosts":["127.0.0.1"],"mercure":{"publisher_key":"` + secret + `","anonymous":true}}]}`
+			if err := os.WriteFile(f, []byte(tf), 0o600); err != nil {
+				return nil, err
+			}
+			args = append(args, "--tenants-file", f)
+		} else {
+			args = append(args, "--anonymous", "--publisher-key", secret)
+		}
 		if n > 1 {
 			nd.cluster = fmt.Sprintf("127.0.0.1:%d", gp)
 			args = append(args, "--cluster-bind", nd.cluster, "--cluster-advertise", nd.cluster,
@@ -763,9 +775,11 @@ func workloads(nodes []*node) {
 		}
 		for _, f := range []struct{ subs, n, conc int }{{1000, 1000, 16}, {5000, 200, 8}} {
 			name := fmt.Sprintf("fan-out to %d subscribers%s", f.subs, where)
-			fanOut(nodes, name, viaHTTP, viaSSE, f.subs, count(f.n), f.conc, false, 0)
-			if !*httpOnly {
-				fanOut(nodes, name, viaStream, viaSSE, f.subs, count(f.n), 1, false, 0)
+			if *fanVia != viaStream {
+				fanOut(nodes, name, viaHTTP, viaSSE, f.subs, count(f.n), f.conc, false, 0)
+			}
+			if !*httpOnly && *fanVia != viaHTTP {
+				fanOut(nodes, name, viaStream, viaSSE, f.subs, count(f.n), *fanClients, false, 0)
 			}
 		}
 		lname := "publish → event latency" + far

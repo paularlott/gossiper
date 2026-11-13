@@ -215,7 +215,32 @@ func (h *Hub) servePublishStream(w http.ResponseWriter, r *http.Request, g *gran
 			out, waits = out[:0], waits[:0]
 		}
 	}
+	// Updates that arrive in a row (the next line already read) and ask for no copies are published together, up to
+	// runLen, through a transport that takes them so: each subscriber is woken once for them and writes them in one
+	// go, instead of once for each. The run goes out as soon as the next read would wait for the client, and before
+	// any other publish or answer, so a lone update is published as soon as it is read.
+	var run []*Update
+	var runAt, runLine []int // the index in out of each update's answer, and its line
+	rp, _ := h.transport.(RunPublisher)
+	runLen := h.runLen()
+	publishRun := func() {
+		if len(run) == 0 {
+			return
+		}
+		errs := h.publishRun(r.Context(), rp, run)
+		for i, u := range run {
+			if errs != nil && errs[i] != nil {
+				status, msg := h.publishFailed(errs[i])
+				out[runAt[i]] = streamAck{Line: runLine[i], Status: status, Error: msg}
+			} else {
+				out[runAt[i]] = streamAck{ID: u.ID}
+			}
+		}
+		clear(run)
+		run, runAt, runLine = run[:0], runAt[:0], runLine[:0]
+	}
 	end := func(a *streamAck) {
+		publishRun()
 		if a != nil {
 			out = append(out, *a)
 		}
@@ -230,6 +255,7 @@ func (h *Hub) servePublishStream(w http.ResponseWriter, r *http.Request, g *gran
 	}
 	for line := 1; ; line++ {
 		if len(out) > 0 && (in.Buffered() == 0 || len(out) >= answerBatch) { // about to wait for the client, or many waiting
+			publishRun()
 			send()
 		}
 		select {
@@ -280,6 +306,15 @@ func (h *Hub) servePublishStream(w http.ResponseWriter, r *http.Request, g *gran
 			out = append(out, streamAck{Line: line, Status: status, Error: msg})
 			continue
 		}
+		if rp != nil && u.Replicas == 0 {
+			out = append(out, streamAck{}) // answered once the run is published
+			run, runAt, runLine = append(run, u), append(runAt, len(out)-1), append(runLine, line)
+			if len(run) >= runLen || in.Buffered() == 0 {
+				publishRun()
+			}
+			continue
+		}
+		publishRun() // what came before goes first
 		id, err := h.publish(r.Context(), u)
 		switch {
 		case err != nil:

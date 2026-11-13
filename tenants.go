@@ -139,7 +139,13 @@ func (s *tenantSet) others(name string) []Tenant {
 	return out
 }
 
-var _ Host = (*Tenants)(nil)
+var (
+	_ Host         = (*Tenants)(nil)
+	_ RunApplier   = (*Tenants)(nil)
+	_ RunApplier   = (*Hub)(nil)
+	_ RunPublisher = (*tenantTransport)(nil)
+	_ RunPublisher = (*local)(nil)
+)
 
 // ErrNoTenant is returned (wrapped) by SetHosts and Remove for a tenant the Tenants do not have.
 var ErrNoTenant = errors.New("gossiper: no such tenant")
@@ -509,6 +515,48 @@ func (ts *Tenants) Apply(u *Update) {
 	}
 }
 
+// ApplyRun implements RunApplier: each tenant's updates of the run go to its hub as one run, in order.
+func (ts *Tenants) ApplyRun(us []*Update) {
+	hubs := ts.set.Load().hubs
+	first := 0
+	for first < len(us) && us[first] == nil {
+		first++
+	}
+	if first == len(us) {
+		return
+	}
+	tenant := us[first].Tenant
+	one := true // the usual case: every update of the run is one tenant's (a stream, or a peer's batch of one tenant)
+	for _, u := range us[first:] {
+		if u == nil || u.Tenant != tenant {
+			one = false
+			break
+		}
+	}
+	if one {
+		if h := hubs[tenant]; h != nil {
+			h.ApplyRun(us[first:])
+		}
+		return
+	}
+	var order []string
+	byTenant := map[string][]*Update{}
+	for _, u := range us {
+		if u == nil {
+			continue
+		}
+		if _, ok := byTenant[u.Tenant]; !ok {
+			order = append(order, u.Tenant)
+		}
+		byTenant[u.Tenant] = append(byTenant[u.Tenant], u)
+	}
+	for _, name := range order {
+		if h := hubs[name]; h != nil {
+			h.ApplyRun(byTenant[name])
+		}
+	}
+}
+
 // Restore implements Host.
 func (ts *Tenants) Restore(u *Update) {
 	if u == nil {
@@ -691,6 +739,27 @@ func (t *tenantTransport) Start(Host) error { return nil } // the Tenants start 
 func (t *tenantTransport) Publish(ctx context.Context, u *Update) error {
 	u.Tenant = t.tenant
 	return t.shared.Publish(ctx, u)
+}
+
+// PublishRun implements RunPublisher: through the shared transport's PublishRun when it has one, an update at a time
+// otherwise.
+func (t *tenantTransport) PublishRun(ctx context.Context, us []*Update) []error {
+	for _, u := range us {
+		u.Tenant = t.tenant
+	}
+	if rp, ok := t.shared.(RunPublisher); ok {
+		return rp.PublishRun(ctx, us)
+	}
+	var errs []error
+	for i, u := range us {
+		if err := t.shared.Publish(ctx, u); err != nil {
+			if errs == nil {
+				errs = make([]error, len(us))
+			}
+			errs[i] = err
+		}
+	}
+	return errs
 }
 
 // PublishCopies implements Replicator for a shared transport that does.

@@ -12,5 +12,8 @@ func (t *Transport) EnqueueRaw(n *gossip.Node, raw []byte) {
 	}
 }
 
+// Received returns how many batches the node received from its peers and applied, and the updates in them.
+func (t *Transport) Received() (batches, updates uint64) { return t.batches.Load(), t.batched.Load() }
+
 // SetReady sets what Ready reports, and what the node tells a peer that copies its history.
 func (t *Transport) SetReady(ready bool) { t.ready.Store(ready) }

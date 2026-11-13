@@ -686,7 +686,19 @@ func (a *adminAPI) dropPreviousKeys(w http.ResponseWriter, r *http.Request) erro
 // change runs fn on the database, and keeps what it wrote only when the tenants still fit together: a change that
 // would leave out a tenant that is served now (itself or another) is refused. The records written were checked on
 // their own; between them only clashes are looked for.
+//
+// A change that is kept is applied to this node's hubs before change returns, so it is live here when the API
+// answers (other nodes apply it as it reaches them). applyTenants applies the database as it is when it runs, one
+// call at a time, so changes apply in the order they were made: an earlier change's apply never undoes a later one.
 func (a *adminAPI) change(ctx context.Context, fn func(tx *configstore.Tx) error) error {
+	if err := a.update(ctx, fn); err != nil {
+		return err
+	}
+	a.s.applyTenants()
+	return nil
+}
+
+func (a *adminAPI) update(ctx context.Context, fn func(tx *configstore.Tx) error) error {
 	return a.s.store.Update(ctx, func(tx *configstore.Tx) error {
 		_, before := a.s.resolveTenants(tx.List, a.s.knownProblem)
 		if err := fn(tx); err != nil {

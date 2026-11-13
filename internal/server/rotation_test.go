@@ -81,7 +81,7 @@ func rotationTenant(t *testing.T, n *node) tn {
 	return a
 }
 
-// expect waits for the statuses of publishes with each key to be as wanted (a change applies asynchronously).
+// expect waits for the statuses of publishes with each key to be as wanted (on other nodes a change applies asynchronously).
 func expect(t *testing.T, base, host string, want map[string]int) {
 	t.Helper()
 	eventually(t, 5*time.Second, fmt.Sprintf("publish statuses %v", want), func() bool {

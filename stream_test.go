@@ -2,15 +2,23 @@ package gossiper
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/paularlott/gossip/hlc"
+	"github.com/paularlott/gossiper/auth"
 )
 
 // streamClient is a streaming publish: lines written to in, answers read from out.
@@ -205,4 +213,290 @@ func TestStreamLineIsOneObject(t *testing.T) {
 		t.Fatalf("a line with space around it: %+v", a)
 	}
 	sub.expect("ok") // nothing of the refused lines
+}
+
+// Lines that arrive in a row are published together (a run): each subscriber still gets its updates in the order
+// published, whatever mix of topics the run holds, and each line is answered in order, a refused one with its own
+// line.
+func TestStreamRun(t *testing.T) {
+	e := newEnv(t, Config{Anonymous: true})
+	both := e.subscribe(t, "", "https://r.test/a", "https://r.test/b")
+	onlyA := e.subscribe(t, "", "https://r.test/a")
+	pattern := e.subscribe(t, "", "https://r.test/{x}")
+	waitSubscribers(t, e.hub, 3)
+	var body strings.Builder
+	var wantBoth, wantA []string
+	const n = 300 // several runs (runMax)
+	for i := range n {
+		switch {
+		case i == 100:
+			body.WriteString("{nope\n")
+		case i == 200:
+			body.WriteString(`{"topic":["https://r.test/c"],"data":"forbidden"}` + "\n")
+		default:
+			topic := "https://r.test/a"
+			if i%3 == 0 {
+				topic = "https://r.test/b"
+			} else {
+				wantA = append(wantA, strconv.Itoa(i))
+			}
+			wantBoth = append(wantBoth, strconv.Itoa(i))
+			fmt.Fprintf(&body, `{"topic":[%q],"data":"%d"}`+"\n", topic, i)
+		}
+	}
+	got := e.finite(t, tokenFor(t, []string{"https://r.test/a", "https://r.test/b"}, nil), body.String())
+	if len(got) != n {
+		t.Fatalf("%d answers, want %d", len(got), n)
+	}
+	for i, a := range got {
+		switch i {
+		case 100:
+			if a.Line != 101 || a.Status != 400 {
+				t.Errorf("answer %d: %+v", i, a)
+			}
+		case 200:
+			if a.Line != 201 || a.Status != 403 {
+				t.Errorf("answer %d: %+v", i, a)
+			}
+		default:
+			if a.ID == "" || a.Status != 0 {
+				t.Errorf("answer %d: %+v", i, a)
+			}
+		}
+	}
+	both.expect(wantBoth...)
+	onlyA.expect(wantA...)
+	pattern.expect(wantBoth...)
+	if p := e.hub.Stats().Published; p != uint64(len(wantBoth)) {
+		t.Errorf("published %d, want %d", p, len(wantBoth))
+	}
+}
+
+// Updates on one topic published in a row (the run's fast path: every update has the same subscribers) reach a
+// subscriber in order.
+func TestStreamRunSameTopic(t *testing.T) {
+	e := newEnv(t, Config{Anonymous: true})
+	sub := e.subscribe(t, "", "https://r.test/a")
+	waitSubscribers(t, e.hub, 1)
+	var body strings.Builder
+	var want []string
+	for i := range 200 {
+		want = append(want, strconv.Itoa(i))
+		fmt.Fprintf(&body, `{"topic":["https://r.test/a"],"data":"%d"}`+"\n", i)
+	}
+	if got := e.finite(t, tokenFor(t, all, nil), body.String()); len(got) != 200 {
+		t.Fatalf("%d answers", len(got))
+	}
+	sub.expect(want...)
+}
+
+// A line that asks for copies is not part of a run: the run before it is published first, so the order holds.
+func TestStreamRunAroundCopies(t *testing.T) {
+	e := newEnv(t, Config{Anonymous: true})
+	sub := e.subscribe(t, "", "https://r.test/a")
+	waitSubscribers(t, e.hub, 1)
+	var body strings.Builder
+	var want []string
+	for i := range 100 {
+		replicas := 0
+		if i == 50 {
+			replicas = 1 // one copy, this node's: published alone
+		}
+		want = append(want, strconv.Itoa(i))
+		fmt.Fprintf(&body, `{"topic":["https://r.test/a"],"data":"%d","replicas":%d}`+"\n", i, replicas)
+	}
+	for i, a := range e.finite(t, tokenFor(t, all, nil), body.String()) {
+		if a.ID == "" || a.Status != 0 {
+			t.Errorf("answer %d: %+v", i, a)
+		}
+	}
+	sub.expect(want...)
+}
+
+// runTransport is a transport that takes runs (RunPublisher), applying them on this node only; it records the length
+// of each run and fails the updates whose data is fail.
+type runTransport struct {
+	*fakeTransport
+	fail string
+
+	mu   sync.Mutex
+	runs []int
+}
+
+func (r *runTransport) PublishRun(_ context.Context, us []*Update) []error {
+	r.mu.Lock()
+	r.runs = append(r.runs, len(us))
+	r.mu.Unlock()
+	var errs []error
+	var ok []*Update
+	for i, u := range us {
+		if r.fail != "" && u.Data == r.fail {
+			if errs == nil {
+				errs = make([]error, len(us))
+			}
+			errs[i] = fmt.Errorf("%w: test", ErrUpdateTooLarge)
+			continue
+		}
+		ok = append(ok, u)
+	}
+	r.fakeTransport.mu.Lock()
+	h := r.fakeTransport.hub
+	r.fakeTransport.mu.Unlock()
+	ApplyRun(h, ok)
+	return errs
+}
+
+func (r *runTransport) longest() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Max(append([]int{0}, r.runs...))
+}
+
+// A transport that takes runs is handed them: an update it fails is answered with its own line, the others of its run
+// are published, and nothing is reordered.
+func TestStreamRunTransport(t *testing.T) {
+	rt := &runTransport{fakeTransport: newFakeTransport("n1"), fail: "fail"}
+	e := newEnv(t, Config{Anonymous: true, Transport: rt})
+	sub := e.subscribe(t, "", "https://r.test/a")
+	waitSubscribers(t, e.hub, 1)
+	var body strings.Builder
+	var want []string
+	for i := range 200 {
+		data := strconv.Itoa(i)
+		if i == 70 {
+			data = "fail"
+		} else {
+			want = append(want, data)
+		}
+		fmt.Fprintf(&body, `{"topic":["https://r.test/a"],"data":%q}`+"\n", data)
+	}
+	got := e.finite(t, tokenFor(t, all, nil), body.String())
+	if len(got) != 200 {
+		t.Fatalf("%d answers", len(got))
+	}
+	for i, a := range got {
+		if i == 70 {
+			if a.Line != 71 || a.Status != http.StatusRequestEntityTooLarge || a.ID != "" {
+				t.Errorf("answer %d: %+v", i, a)
+			}
+		} else if a.ID == "" || a.Status != 0 {
+			t.Errorf("answer %d: %+v", i, a)
+		}
+	}
+	sub.expect(want...)
+	if n := rt.longest(); n < 2 || n > runMax {
+		t.Errorf("longest run %d, want 2 to %d", n, runMax)
+	}
+	if p := e.hub.Stats().Published; p != 199 {
+		t.Errorf("published %d, want 199", p)
+	}
+}
+
+// A run applied twice (a peer's batch sent again) is applied once: the updates applied before are dropped, by
+// stamp and origin or, for the idempotent ones, by ID, and a subscriber receives each once, in order.
+func TestApplyRunDuplicates(t *testing.T) {
+	e := newEnv(t, Config{Anonymous: true})
+	sub := e.subscribe(t, "", "https://r.test/a", "https://r.test/b")
+	waitSubscribers(t, e.hub, 1)
+	var run []*Update
+	var want []string
+	for i := range 150 {
+		topic := "https://r.test/a"
+		if i%2 == 0 {
+			topic = "https://r.test/b"
+		}
+		u := &Update{ID: fmt.Sprintf("d-%d", i), Topics: []string{topic}, Data: strconv.Itoa(i), Stamp: uint64(hlc.Now()), Origin: "peer"}
+		u.Idempotent = i%5 == 0
+		run = append(run, u)
+		want = append(want, u.Data)
+	}
+	again := make([]*Update, len(run)) // a copy of each, as a peer's batch sent again is decoded afresh
+	for i, u := range run {
+		c := *u
+		c.encoded = nil
+		again[i] = &c
+	}
+	e.hub.ApplyRun(run)
+	e.hub.ApplyRun(again)
+	sub.expect(want...)
+	if ev, ok := sub.next(100 * time.Millisecond); ok {
+		t.Errorf("received again: %+v", ev)
+	}
+	if s := e.hub.Stats(); s.Applied != 150 || s.Duplicates != 150 {
+		t.Errorf("applied %d, duplicates %d, want 150 and 150", s.Applied, s.Duplicates)
+	}
+}
+
+// A run is at most a quarter of a subscriber's queue: it never takes a subscriber from below half full (where the
+// publisher waits for it) to full (where it is disconnected).
+func TestRunLen(t *testing.T) {
+	for _, c := range []struct{ buffer, want int }{{1, 1}, {8, 2}, {100, 25}, {1000, runMax}, {8192, runMax}} {
+		h := &Hub{cfg: Config{DispatchBuffer: c.buffer}}
+		if got := h.runLen(); got != c.want {
+			t.Errorf("DispatchBuffer %d: run of %d, want %d", c.buffer, got, c.want)
+		}
+	}
+}
+
+// Tenants take runs over any transport: a stream to a tenant's hub is published in runs through the shared transport,
+// and a run that mixes tenants (a peer's batch) reaches each tenant's hub with its own updates, in order.
+func TestStreamRunTenants(t *testing.T) {
+	rt := &runTransport{fakeTransport: newFakeTransport("n1")}
+	tenant := func(name, key string) Tenant {
+		return Tenant{Name: name, Hosts: []string{name + ".test"}, Config: Config{
+			Protocol: ProtocolBoth, PublisherKey: auth.KeyConfig{Key: key}, Anonymous: true, Heartbeat: -1}}
+	}
+	ts, err := NewTenants([]Tenant{tenant("a", testSecret), tenant("b", testSecret+"-b")}, rt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), wait)
+		defer cancel()
+		_ = ts.Close(ctx)
+	})
+	envOf := func(h *Hub) *env {
+		srv := httptest.NewServer(h)
+		tr := &http.Transport{MaxIdleConnsPerHost: 64}
+		t.Cleanup(func() { tr.CloseIdleConnections(); srv.CloseClientConnections(); srv.Close() })
+		return &env{hub: h, srv: srv, client: &http.Client{Transport: tr}, tr: tr}
+	}
+	a, b := envOf(ts.Hub("a")), envOf(ts.Hub("b"))
+	subA := a.subscribe(t, "", "https://r.test/a")
+	subB := b.subscribe(t, "", "https://r.test/a")
+	waitSubscribers(t, a.hub, 1)
+	waitSubscribers(t, b.hub, 1)
+
+	var body strings.Builder
+	var want []string
+	for i := range 200 {
+		want = append(want, strconv.Itoa(i))
+		fmt.Fprintf(&body, `{"topic":["https://r.test/a"],"data":"%d"}`+"\n", i)
+	}
+	if got := a.finite(t, tokenFor(t, all, nil), body.String()); len(got) != 200 {
+		t.Fatalf("%d answers", len(got))
+	}
+	subA.expect(want...)
+	if n := rt.longest(); n < 2 {
+		t.Errorf("longest run %d: the tenant's stream was not published in runs", n)
+	}
+
+	// A peer's batch: both tenants' updates, interleaved, and one of a tenant this node does not have.
+	var run []*Update
+	var wantA, wantB []string
+	for i := range 99 {
+		name := []string{"a", "b", "gone"}[i%3]
+		data := fmt.Sprintf("%s%d", name, i)
+		run = append(run, &Update{ID: fmt.Sprintf("p-%d", i), Topics: []string{"https://r.test/a"}, Data: data,
+			Stamp: uint64(hlc.Now()), Origin: "peer", Tenant: name})
+		switch name {
+		case "a":
+			wantA = append(wantA, data)
+		case "b":
+			wantB = append(wantB, data)
+		}
+	}
+	ts.ApplyRun(run)
+	subA.expect(wantA...)
+	subB.expect(wantB...)
 }

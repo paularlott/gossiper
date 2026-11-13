@@ -38,6 +38,34 @@ type Host interface {
 	History(stamp uint64, origin string, maxBytes int) (updates []*Update, more bool)
 }
 
+// RunPublisher is a Transport that publishes several updates in one go (the local and cluster transports, and the
+// Tenants' share of either). The hub hands it a run of updates that arrived in a row on one streaming publish, none
+// asking for copies; a transport without it is handed them one at a time.
+type RunPublisher interface {
+	// PublishRun publishes us, each already stamped and given its ID, in order, as Publish publishes each, and hands
+	// every node's hub the run through RunApplier.ApplyRun where the hub has it (Apply otherwise). It returns nil when
+	// all are published, or each update's error (nil for those published).
+	PublishRun(ctx context.Context, us []*Update) []error
+}
+
+// RunApplier is a Host that applies a run of updates together: each subscriber is woken once for the updates of the
+// run it receives, instead of once for each. A *Hub and the Tenants are RunAppliers.
+type RunApplier interface {
+	// ApplyRun applies us, in order, as Apply applies each.
+	ApplyRun(us []*Update)
+}
+
+// ApplyRun hands us to h as one run when h is a RunApplier, one at a time otherwise. Transports call it.
+func ApplyRun(h Host, us []*Update) {
+	if ra, ok := h.(RunApplier); ok {
+		ra.ApplyRun(us)
+		return
+	}
+	for _, u := range us {
+		h.Apply(u)
+	}
+}
+
 // Subscription is one active subscription: a subscriber and one of its topic matchers. A draft-07 subscription
 // has a Topic (its selector); a Mercure 1.0 one has a MatchType and a Match.
 type Subscription struct {
@@ -65,6 +93,11 @@ func (l *local) Start(h Host) error { l.h = h; return nil }
 
 func (l *local) Publish(_ context.Context, u *Update) error {
 	l.h.Apply(u)
+	return nil
+}
+
+func (l *local) PublishRun(_ context.Context, us []*Update) []error {
+	ApplyRun(l.h, us)
 	return nil
 }
 

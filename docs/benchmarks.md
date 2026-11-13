@@ -146,6 +146,37 @@ the 1000- and 5000-subscriber rows vary widely from run to run.
 An idle node takes 14 MiB (17–18 MiB in a cluster). After every workload, 5000 SSE subscribers included, a single
 node held 364 MiB, and each cluster node 140–165 MiB.
 
+## 0.4: batched fan-out
+
+0.4 publishes a stream's updates in runs (see [What sets the pace](#what-sets-the-pace)). 0.3.0 against 0.4.0, the
+benchmark starting the hubs, on two machines: the Mac above (native), and a 16-core Linux amd64 server whose clock
+source is HPET, where every clock read and system call costs several times the usual, so its absolute numbers are
+low: compare the versions on it, not the machines. Ranges over two full runs, and five to nine runs of the
+5000-subscriber fan-out; "tenants" serves the same workloads from one tenant of a multi-tenant hub (`-tenants`).
+
+| Fan-out to 5000 subscribers, events/s | Linux 0.3.0 | Linux 0.4.0 | Mac 0.3.0 | Mac 0.4.0 |
+| --- | --- | --- | --- | --- |
+| Single node, stream (1 client) | 171k–194k | 3.88M–5.18M | 570k–1.05M | 1.26M–2.03M |
+| Single node, POST (8 publishers) | 864k–1.05M | 878k–1.01M | 226k–1.51M | 222k–1.34M |
+| Cluster, stream | 350k–396k | 4.62M–5.28M | 813k–1.24M | 1.25M–2.18M |
+| Cluster, POST | 475k–559k | 1.09M–1.43M | 398k–618k | 587k–974k |
+| Tenants, single node, stream | 184k–188k | 4.00M–4.85M | 822k–946k (one run stalled: 10k) | 1.81M–2.06M |
+| Tenants, cluster, stream | 370k–430k | 3.97M–4.78M | 917k–1.07M | 1.48M–1.94M |
+
+| Other workloads that changed | Linux 0.3.0 | Linux 0.4.0 | Mac 0.3.0 | Mac 0.4.0 |
+| --- | --- | --- | --- | --- |
+| Fan-out to 1000, stream, single node | 758k–784k | 4.56M–4.98M | 961k–1.04M | 1.71M–1.83M |
+| Fan-out to 1000, stream, cluster | 2.16M–2.19M | 4.43M–4.84M | 1.79M–1.91M | 1.73M–2.26M |
+| 4 services → 1 service, single node | 40k | 50k | 622k–623k | 879k–920k |
+| 4 services → 1 service, cluster | 37k–38k | 41k | 388k–397k | 687k–703k |
+| Service → 10 services, one topic, cluster (events/s) | 231k–232k | 249k–253k | 2.79M | 3.61M–3.73M |
+
+- A stream feeding 5000 subscribers delivers 20 to 25 times as many events on Linux, about twice as many on the
+  Mac, and now outpaces eight POSTers.
+- A cluster's POST fan-out to 5000 doubles: each node applies a peer's batch as runs.
+- Everything else, latency included, is unchanged within the runs' spread. The Mac's POST fan-out to 5000 is
+  dominated by loopback stalls (see below), on either version.
+
 ## What sets the pace
 
 The hub's own work per update is about a microsecond: token and topic checks, history, and routing. The rest is
@@ -157,9 +188,9 @@ moving bytes: a read, a write and a goroutine wake-up per message, unless severa
     fast.
   - With `--history-db` the hub keeps reading the stream while the store syncs, and answers each batch once it is
     stored. The deletes that keep the file the size of the history go in the same transactions as the inserts.
-  - One stream publishes its updates in order, one at a time. To fan out to thousands of subscribers as fast as
-    possible, publish from several clients: one stream feeding 5000 subscribers in Docker delivers 1.8M events/s,
-    eight POSTers 4.3M.
+  - A stream publishes the lines that arrive together as runs of up to 64: each subscriber is woken once per run and
+    writes it in one go, and a cluster sends the run to each peer in one message. Before 0.4 a stream published one
+    update at a time, and each subscriber wrote about one event per system call (see [0.4](#04-batched-fan-out)).
   - Go's HTTP/2 (h2c, `-stream-proto h2c`) costs more per message than HTTP/1.1 in memory: about 200k/s against 350k/s
     from one client in earlier runs. Once updates are stored, the two are close.
 - **Delivery.**

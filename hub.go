@@ -411,23 +411,103 @@ func (h *Hub) Apply(u *Update) { h.apply(u, false) }
 func (h *Hub) Restore(u *Update) { h.apply(u, true) }
 
 func (h *Hub) apply(u *Update, restored bool) {
-	if u == nil || len(u.Topics) == 0 || u.ID == "" {
+	if !h.record(u, restored) {
 		return
+	}
+	defer h.applying.Done()
+	// An update waits for the subscribers behind, published here or on another node (the cluster transport applies
+	// each peer's on a goroutine of its own, so a slow reader here paces that peer's replication, and nothing else).
+	if behind := h.fanout(u); len(behind) > 0 && !restored {
+		h.wait(behind)
+	}
+}
+
+// runMax is the most updates applied together (see ApplyRun); fewer with a small DispatchBuffer (runLen).
+const runMax = 64
+
+// runLen is the most updates this hub applies together: runMax, or a quarter of a subscriber's queue when that is
+// less, so that a run never takes a subscriber from below half full (where publishers wait for it) to full (where
+// it is disconnected).
+func (h *Hub) runLen() int {
+	return min(runMax, max(1, h.cfg.DispatchBuffer/4))
+}
+
+// publishRun publishes validated updates that arrived in a row on one stream, none asking for copies, as publish
+// publishes each, through a transport that takes them together (rp). It returns nil, or each update's error.
+func (h *Hub) publishRun(ctx context.Context, rp RunPublisher, us []*Update) []error {
+	for _, u := range us {
+		ts := h.clock.Now()
+		u.Stamp = uint64(ts)
+		u.Origin = h.nodeID
+		u.Idempotent = false
+		if u.ID == "" {
+			u.ID = newEventID(ts)
+		}
+		u.encoded = nil
+	}
+	errs := rp.PublishRun(ctx, us)
+	n := len(us)
+	for _, err := range errs {
+		if err != nil {
+			n--
+		}
+	}
+	h.stats.Published.Add(uint64(n))
+	return errs
+}
+
+// ApplyRun implements RunApplier: it applies us as Apply applies each, but runLen at a time, each run recorded
+// first and then sent to the subscribers, each subscriber all of its updates of the run in a row: it is woken once
+// for them, and writes them together. Transports call it for runs published on this node or another.
+func (h *Hub) ApplyRun(us []*Update) {
+	step := h.runLen()
+	for len(us) > 0 {
+		n := min(step, len(us))
+		h.applyRun(us[:n])
+		us = us[n:]
+	}
+}
+
+func (h *Hub) applyRun(us []*Update) {
+	if len(us) == 1 {
+		h.apply(us[0], false)
+		return
+	}
+	var buf [runMax]*Update
+	run := buf[:0]
+	for _, u := range us {
+		if h.record(u, false) {
+			run = append(run, u)
+		}
+	}
+	if len(run) == 0 {
+		return
+	}
+	defer h.applying.Add(-len(run))
+	if behind := h.fanoutRun(run); len(behind) > 0 {
+		h.wait(behind)
+	}
+}
+
+// record records u in the history (and the store) before it is sent to the subscribers: false when it is not to be
+// sent (refused, a duplicate, or the hub is closing). On true the caller calls applying.Done once u is sent.
+func (h *Hub) record(u *Update, restored bool) bool {
+	if u == nil || len(u.Topics) == 0 || u.ID == "" {
+		return false
 	}
 	if u.Tenant != h.tenant { // another tenant's update, reaching a node that does not run that tenant as a hub
-		return
+		return false
 	}
 	if u.Stamp < h.since { // a former tenant's of this name, deleted since: from a peer that missed it, or the store
-		return
+		return false
 	}
 	h.applyMu.RLock()
 	if h.applyClosed { // the hub is closing: nothing more goes into its history or its store
 		h.applyMu.RUnlock()
-		return
+		return false
 	}
 	h.applying.Add(1)
 	h.applyMu.RUnlock()
-	defer h.applying.Done()
 	if u.Origin != h.nodeID && !h.clock.WitnessBounded(hlc.Timestamp(u.Stamp), maxWitnessAhead) {
 		// Kept, it would sort after everything published here for as long as the skew lasts, and a cursor at it would
 		// skip those updates on reconnection.
@@ -437,7 +517,8 @@ func (h *Hub) apply(u *Update, restored bool) {
 			h.log.Warn("update refused: stamped too far ahead of this node's clock (check the nodes' clocks)", "origin", u.Origin,
 				"refused_total", h.stats.Refused.Load())
 		}
-		return
+		h.applying.Done()
+		return false
 	}
 	if u.encoded == nil {
 		u.encoded = u.encode()
@@ -452,19 +533,17 @@ func (h *Hub) apply(u *Update, restored bool) {
 	}
 	if u.Idempotent && !h.idem.first(u.ID, time.Now()) && !restored { // published again: the first was applied
 		h.stats.Duplicates.Add(1)
-		return
+		h.applying.Done()
+		return false
 	}
 	if !h.hist.addAt(u, recv, at) {
 		h.stats.Duplicates.Add(1)
-		return
+		h.applying.Done()
+		return false
 	}
 	h.save(u)
 	h.stats.Applied.Add(1)
-	// An update waits for the subscribers behind, published here or on another node (the cluster transport applies
-	// each peer's on a goroutine of its own, so a slow reader here paces that peer's replication, and nothing else).
-	if behind := h.fanout(u); len(behind) > 0 && !restored {
-		h.wait(behind)
-	}
+	return true
 }
 
 // Back-pressure: an update waits for subscribers whose queue is more than half full, as long as they are still
@@ -534,6 +613,91 @@ func (h *Hub) fanout(u *Update) (behind []*subscriber) {
 		}
 	}
 	return behind
+}
+
+// fanoutRun queues the updates of run, in order, for every subscriber that may receive them, each subscriber's in a
+// row (it is woken once for them); it returns the subscribers to wait for, as fanout does. A subscriber on several
+// of the run's topics still gets its updates in the order of the run.
+func (h *Hub) fanoutRun(run []*Update) (behind []*subscriber) {
+	same := true // the same topics, and as private: the same subscribers receive every update of run
+	for _, u := range run[1:] {
+		if u.Private != run[0].Private || !slices.Equal(u.Topics, run[0].Topics) {
+			same = false
+			break
+		}
+	}
+	var full []*subscriber
+	queued := 0
+	sendAll := func(s *subscriber, us []*Update) {
+		late := false
+		for _, u := range us {
+			n := len(full)
+			var b []*subscriber
+			b, full, queued = h.send(s, u, nil, full, queued)
+			if len(full) > n { // its queue is full: it is disconnected, and nothing more is queued for it
+				late = false
+				break
+			}
+			late = late || len(b) > 0
+		}
+		if late {
+			behind = append(behind, s)
+		}
+	}
+	h.mu.RLock()
+	if same {
+		h.receivers(run[0], func(s *subscriber) { sendAll(s, run) })
+	} else { // the subscribers of each update differ: gather each subscriber's, in order
+		var order []*subscriber
+		mine := map[*subscriber][]*Update{}
+		for _, u := range run {
+			h.receivers(u, func(s *subscriber) {
+				us, ok := mine[s]
+				if !ok {
+					order = append(order, s)
+				}
+				mine[s] = append(us, u)
+			})
+		}
+		for _, s := range order {
+			sendAll(s, mine[s])
+		}
+	}
+	h.mu.RUnlock()
+	h.fanned.Add(uint64(queued))
+	for _, s := range full {
+		if s.kick() {
+			h.stats.Dropped.Add(1)
+			h.log.Debug("subscriber fell behind, disconnecting", "subscriber", s.id)
+		}
+	}
+	return behind
+}
+
+// receivers calls fn with every subscriber that may receive u, once each. Called with mu held.
+func (h *Hub) receivers(u *Update, fn func(*subscriber)) {
+	for s := range h.patterned {
+		if h.canReceive(s, u) {
+			fn(s)
+		}
+	}
+	var seen map[*subscriber]struct{}
+	if len(u.Topics) > 1 {
+		seen = map[*subscriber]struct{}{}
+	}
+	for _, t := range u.Topics {
+		for s := range h.exact[t] {
+			if seen != nil {
+				if _, ok := seen[s]; ok {
+					continue
+				}
+				seen[s] = struct{}{}
+			}
+			if !u.Private || h.authorized(s, u) {
+				fn(s)
+			}
+		}
+	}
 }
 
 // send queues u for s: added to behind when its queue is over half full while it still writes, to full when its

@@ -4,8 +4,10 @@
 //
 // Each peer has a sender of its own that keeps one batch in flight and sends the next once the peer has acknowledged
 // it, so a peer receives a node's updates in the order they were published there, and a slow peer gets larger batches
-// rather than a backlog of messages. A batch that is not acknowledged is sent again while the peer is a member of the
-// group, so a peer may receive an update more than once; its hub applies it once (by origin and stamp). What is
+// rather than a backlog of messages. A run of updates (PublishRun: a streaming publish's) is queued at once, so it goes
+// in one batch, and a peer applies each batch as a run (gossiper.ApplyRun). A batch that is not acknowledged is sent
+// again while the peer is a member of the group, so a peer may receive an update more than once; its hub applies it
+// once (by origin and stamp). What is
 // queued for a peer that leaves, or more than MaxQueueBytes for one that cannot keep up, is dropped and counted
 // (Dropped), as are updates a peer cannot decode (a node of another version). A node that starts copies the history of
 // a peer (Options.Backfill), so its subscribers can resume with Last-Event-ID from there, and two nodes that lost each
@@ -96,6 +98,8 @@ type Transport struct {
 	appliers map[gossip.NodeID]chan applyJob
 	applying sync.WaitGroup
 	dropped  atomic.Uint64
+	batches  atomic.Uint64 // batches received from the peers and applied, and the updates in them (for the tests)
+	batched  atomic.Uint64
 	ready    atomic.Bool
 	stop     chan struct{} // closed by Close
 	// done ends every exchange with the peers: cancelled closeTimeout after Close starts.
@@ -299,6 +303,56 @@ func (t *Transport) publish(u *gossiper.Update, peers []*gossip.Node, c *copies)
 	return nil
 }
 
+// PublishRun implements gossiper.RunPublisher: it applies the updates of us that it can carry on this node as one run,
+// then queues them for every other hub of the group in one go, so they travel together in as few batches as
+// batchBytes allows, and the peer applies each batch as a run. An update too large to replicate fails alone
+// (ErrUpdateTooLarge), as Publish fails it.
+func (t *Transport) PublishRun(_ context.Context, us []*gossiper.Update) []error {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	var errs []error
+	fail := func(i int, err error) {
+		if errs == nil {
+			errs = make([]error, len(us))
+		}
+		errs[i] = err
+	}
+	if t.closed.Load() {
+		for i := range us {
+			fail(i, gossiper.ErrClosed)
+		}
+		return errs
+	}
+	run := make([]*gossiper.Update, 0, len(us))
+	items := make([]item, 0, len(us))
+	for i, u := range us {
+		if updateSize(u) > t.opts.MaxUpdateBytes {
+			fail(i, ErrUpdateTooLarge)
+			continue
+		}
+		raw, err := msgpack.Marshal(u) // before the hub hands u to its subscribers
+		if err != nil {
+			fail(i, err)
+			continue
+		}
+		run = append(run, u)
+		items = append(items, item{raw: raw, stamp: u.Stamp})
+	}
+	if len(run) == 0 {
+		return errs
+	}
+	peers := t.peers()
+	gossiper.ApplyRun(t.hub, run)
+	for _, n := range peers {
+		if l := t.linkTo(n); l != nil {
+			l.enqueue(items...)
+		} else {
+			t.dropped.Add(uint64(len(items)))
+		}
+	}
+	return errs
+}
+
 // linkTo returns the sender to n, starting one if there is none, or nil if n has left the group meanwhile (its link
 // would never be stopped: forget has run) or the transport is closing (Close would not wait for it).
 func (t *Transport) linkTo(n *gossip.Node) *link {
@@ -436,16 +490,25 @@ type link struct {
 	done     chan struct{}
 }
 
-func (l *link) enqueue(it item) {
+// enqueue queues its, in order, together: the sender, woken once, takes them in as few batches as batchBytes allows.
+func (l *link) enqueue(its ...item) {
 	l.mu.Lock()
-	if l.dead || l.bytes+len(it.raw) > l.t.opts.MaxQueueBytes {
-		l.mu.Unlock()
-		l.t.dropped.Add(1)
-		return
+	dropped := 0
+	for _, it := range its {
+		if l.dead || l.bytes+len(it.raw) > l.t.opts.MaxQueueBytes {
+			dropped++
+			continue
+		}
+		l.queue = append(l.queue, it)
+		l.bytes += len(it.raw)
 	}
-	l.queue = append(l.queue, it)
-	l.bytes += len(it.raw)
 	l.mu.Unlock()
+	if dropped > 0 {
+		l.t.dropped.Add(uint64(dropped))
+		if dropped == len(its) {
+			return
+		}
+	}
 	select {
 	case l.wake <- struct{}{}:
 	default:
@@ -653,13 +716,14 @@ func (t *Transport) handlePublish(n *gossip.Node, p *gossip.Packet, r gossip.Rep
 	}
 }
 
-// apply applies a peer's batches in order and acknowledges each, until jobs is closed.
+// apply applies a peer's batches in order, each as a run (gossiper.ApplyRun), and acknowledges each, until jobs is
+// closed.
 func (t *Transport) apply(jobs <-chan applyJob) {
 	for j := range jobs {
-		if !t.closed.Load() {
-			for _, u := range j.us {
-				t.hub.Apply(u)
-			}
+		if !t.closed.Load() && len(j.us) > 0 {
+			gossiper.ApplyRun(t.hub, j.us)
+			t.batches.Add(1)
+			t.batched.Add(uint64(len(j.us)))
 		}
 		j.r.Reply(&j.a, nil)
 	}
