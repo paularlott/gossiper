@@ -29,6 +29,7 @@ func TestSubscribeResponse(t *testing.T) {
 		"Content-Type":           "text/event-stream",
 		"Cache-Control":          "private, no-cache, no-store, must-revalidate, max-age=0",
 		"X-Accel-Buffering":      "no",
+		"Incremental":            "?1",
 		"X-Content-Type-Options": "nosniff",
 		"X-Frame-Options":        "DENY",
 	}

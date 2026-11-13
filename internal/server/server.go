@@ -569,6 +569,12 @@ func (s *Server) routes() (http.Handler, http.Handler) {
 		admin.HandleFunc("GET /api-docs/assets/{file}", apiDocsAsset)
 		admin.HandleFunc("GET /api/openapi.json", openAPIDocument)
 		s.adminRoutes(admin)
+		if t := s.settings.APIToken; t != "" && !strings.HasPrefix(t, "$2") && len(t) < 32 {
+			s.log.Warn("the API token is short: use 32 characters or more (gossiper genkey makes one), or its bcrypt hash")
+		}
+	}
+	if s.settings.AdminListen == "" && (s.settings.Metrics || (s.store != nil && (s.settings.APIToken != "" || s.adminIDP != nil))) {
+		s.log.Warn("the admin API and metrics are served on the public listener: set admin-listen (e.g. an internal address) to keep them off it")
 	}
 	if s.settings.Pprof {
 		admin.HandleFunc("/debug/pprof/", pprof.Index)

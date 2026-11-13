@@ -153,9 +153,11 @@ func departScenario(t *testing.T, graceful bool) {
 		}
 		if graceful {
 			// gossip keeps retrying the configured peer list, and may exchange state with the node once more before
-			// it learns the node left: the warnings a departed node leaves behind
+			// it learns the node left: the warnings a departed node leaves behind. The nodes serve metrics on the
+			// public listener, which they warn about at start.
 			for _, l := range lines["WARN"] {
-				if !strings.Contains(l, `"msg":"failed to join peer"`) && !strings.Contains(l, `"msg":"failed to exchange state with node"`) {
+				if !strings.Contains(l, `"msg":"failed to join peer"`) && !strings.Contains(l, `"msg":"failed to exchange state with node"`) &&
+					!strings.Contains(l, `"msg":"the admin API and metrics are served on the public listener`) {
 					t.Errorf("node %d logged an unexpected warning after a graceful shutdown: %s", n.idx, l)
 				}
 			}

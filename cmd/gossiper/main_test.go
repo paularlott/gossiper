@@ -365,6 +365,9 @@ func TestReadyURL(t *testing.T) {
 		{":8080", false, "https://127.0.0.1:8080/readyz"},
 		{"0.0.0.0:3000", true, "http://127.0.0.1:3000/readyz"},
 		{"[::]:9443", false, "https://127.0.0.1:9443/readyz"},
+		{"[::1]:18110", false, "https://[::1]:18110/readyz"},
+		{"10.0.0.5:8080", true, "http://10.0.0.5:8080/readyz"},
+		{"localhost:8080", false, "https://localhost:8080/readyz"},
 		{"", false, "https://127.0.0.1:8080/readyz"},
 	} {
 		if got := readyURL(tc.listen, tc.httpOnly); got != tc.want {

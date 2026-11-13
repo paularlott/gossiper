@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -80,6 +81,10 @@ func Open(path string, log logger.Logger) (*Store, error) {
 	if log == nil {
 		log = logger.NewNullLogger()
 	}
+	// It holds updates, private ones included: readable by this user only, as the tenants' database is.
+	if f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600); err == nil {
+		f.Close()
+	}
 	q := url.Values{}
 	q.Add("_pragma", "busy_timeout(5000)")
 	q.Add("_pragma", "journal_mode(WAL)")
@@ -96,6 +101,10 @@ func Open(path string, log logger.Logger) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("historydb: %s: %w", path, err)
 	}
+	if err := checkSchema(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("historydb: %s: %w", path, err)
+	}
 	ins, err := db.Prepare(`INSERT OR IGNORE INTO history (tenant, stamp, origin, data) VALUES (?, ?, ?, ?)`)
 	if err != nil {
 		db.Close()
@@ -107,6 +116,25 @@ func Open(path string, log logger.Logger) (*Store, error) {
 	s.notify.Store(&ch)
 	go s.run()
 	return s, nil
+}
+
+// schemaVersion is the layout of the file, kept in SQLite's user_version: a later version migrates from it.
+const schemaVersion = 1
+
+// checkSchema marks a new file with schemaVersion and refuses one written by a later version of gossiper.
+func checkSchema(db *sql.DB) error {
+	var v int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&v); err != nil {
+		return err
+	}
+	switch {
+	case v == 0: // new (or written before versions were kept, with this layout)
+		_, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, schemaVersion))
+		return err
+	case v > schemaVersion:
+		return fmt.Errorf("written by a later version of gossiper (schema %d, this one reads %d)", v, schemaVersion)
+	}
+	return nil
 }
 
 // Load implements gossiper.HistoryStore.

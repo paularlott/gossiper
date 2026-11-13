@@ -5,8 +5,14 @@
 #     docker compose -f examples/cluster/docker-compose.yml up --build
 #
 # The hub is at http://localhost:8080/.well-known/mercure behind Caddy. Publish to it and subscribe to it; a
-# subscriber on any node receives what is published on any other. A stream that ends (a node stops) reconnects
-# through Caddy to a live node with Last-Event-ID and gets what it missed from that node's history.
+# subscriber on any node receives what is published on any other. A publisher token for it (the audience is the
+# hub's URL, plain http here):
+#
+#   go run ./cmd/gossiper token --modern --key "$GOSSIPER_PUBLISHER_KEY" --publish '*' \
+#     --audience http://localhost:8080/.well-known/mercure
+#
+# A stream that ends (a node stops) reconnects through Caddy to a live node with Last-Event-ID and gets what it
+# missed from that node's history.
 #
 # Try a failure: `docker compose -f examples/cluster/docker-compose.yml stop node2` (graceful: its Mercure streams
 # end and reconnect) or `kill node2` (abrupt), then `start node2`.

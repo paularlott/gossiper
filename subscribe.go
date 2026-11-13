@@ -447,6 +447,9 @@ func (h *Hub) streamHeaders(w http.ResponseWriter, r *http.Request, cursor, at s
 	hd.Set("Pragma", "no-cache")
 	hd.Set("Expires", "0")
 	hd.Set("X-Accel-Buffering", "no")
+	// The Incremental header (IETF HTTP WG), which Mercure 1.0 asks hubs to send: intermediaries forward each event
+	// as it comes rather than buffer the response.
+	hd.Set("Incremental", "?1")
 	hd.Set("Accept-Query", formMediaType)
 	if r.ProtoMajor == 1 {
 		hd.Set("Connection", "keep-alive")

@@ -249,6 +249,8 @@ func sqliteDSN(path string) string {
 	q.Add("_pragma", "journal_mode(WAL)")
 	// FULL: a commit is on disk when it returns (NORMAL in WAL mode can lose the last commits to a power cut).
 	q.Add("_pragma", "synchronous(FULL)")
+	// Deleted and overwritten records (a tenant's HMAC secret) are zeroed in the file, not left in free pages.
+	q.Add("_pragma", "secure_delete(ON)")
 	q.Add("_txlock", "immediate")
 	sep := "?"
 	if strings.Contains(path, "?") {

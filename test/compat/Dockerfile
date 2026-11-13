@@ -1,5 +1,5 @@
 # Gossiper, built from the repository root (the compose file sets the build context to ../..).
-FROM golang:1.27.3-alpine3.24 AS build
+FROM golang:1.27.4-alpine3.24 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

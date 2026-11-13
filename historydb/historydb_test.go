@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -233,5 +234,30 @@ func TestStreamStored(t *testing.T) {
 	s.Close()
 	if got := len(loaded(t, open(t, path), "")); got != n {
 		t.Fatalf("%d updates stored, want %d", got, n)
+	}
+}
+
+func TestSchemaVersion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "h.db")
+	s, err := Open(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(path); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Errorf("file mode: %v %v, want 0600", fi.Mode().Perm(), err)
+	}
+	var v int
+	if err := s.db.QueryRow(`PRAGMA user_version`).Scan(&v); err != nil || v != schemaVersion {
+		t.Fatalf("user_version %d %v, want %d", v, err, schemaVersion)
+	}
+	if _, err := s.db.Exec(`PRAGMA user_version = 99`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if s, err := Open(path, nil); err == nil {
+		s.Close()
+		t.Fatal("a file of a later schema was opened")
 	}
 }

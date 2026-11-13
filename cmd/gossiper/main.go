@@ -122,7 +122,7 @@ func serveCmd(s *server.Settings) *cli.Command {
 			str("tls-cert", "TLS certificate file (PEM), with tls-key; renewed files are picked up within an hour, or at once on SIGHUP (default: a self-signed certificate)", &s.TLSCert),
 			str("tls-key", "TLS private key file (PEM)", &s.TLSKey),
 			str("tls-dir", "Directory the self-signed certificate is kept in, so clients can trust its file (default: a new one at each start)", &s.TLSDir),
-			strs("tls-hosts", "Further host names and addresses for the self-signed certificate (beside localhost, the host name, the listen, hub-url and cluster-advertise hosts)", &s.TLSHosts),
+			strs("tls-hosts", "Further host names and addresses for the self-signed certificate (beside localhost, the host name, the listen, admin-listen, hub-url and cluster-advertise hosts)", &s.TLSHosts),
 			boolean("metrics", "Serve Prometheus metrics at /metrics", &s.Metrics),
 			boolean("pprof", "Serve Go profiling at /debug/pprof/ on the admin listener (needs admin-listen; for diagnosis)", &s.Pprof),
 			str("log-level", "Log level: trace, debug, info, warn, error", &s.LogLevel),
@@ -135,7 +135,7 @@ func serveCmd(s *server.Settings) *cli.Command {
 			str("subscriber-alg", "Subscribers' JWT algorithm (default: HS256 with a secret, a PEM public key's own, any public-key algorithm with a JWK Set)", &s.SubscriberAlg, "MERCURE_SUBSCRIBER_JWT_ALG"),
 			strs("trusted-issuers", "iss values accepted in Mercure 1.0 tokens signed with the publisher or subscriber key", &s.TrustedIssuers, "MERCURE_TRUSTED_ISSUERS"),
 			strs("authorization-servers", "OAuth authorization servers issuing Mercure 1.0 tokens (keys found by RFC 8414 discovery)", &s.AuthServers),
-			str("resource-identifier", "The aud Mercure 1.0 tokens must carry (default: the hub URL the client contacted)", &s.ResourceID, "MERCURE_RESOURCE_IDENTIFIER"),
+			str("resource-identifier", "The aud Mercure 1.0 tokens must carry (default: an absolute hub-url, else the hub URL the client contacted)", &s.ResourceID, "MERCURE_RESOURCE_IDENTIFIER"),
 			str("hub-url", "The hub's public URL, https://host/.well-known/mercure: base for relative topics and URL patterns", &s.HubURL),
 			str("access-token-cookie-name", "Mercure 1.0 authorization cookie name", &s.CookieAccessName),
 			boolean("allow-insecure-key-urls", "Allow plain-HTTP JWK Set and discovery URLs, and https ones with a certificate that does not verify (development only)", &s.InsecureKeyURLs),
@@ -181,7 +181,7 @@ func serveCmd(s *server.Settings) *cli.Command {
 			str("api-token", "Bearer token of the admin API at /api (plain or bcrypt); needs database", &s.APIToken),
 			str("admin-issuer", "Identity provider whose access tokens the admin API takes (keys by discovery); needs database", &s.AdminIssuer),
 			str("admin-audience", "The admin API's identifier (resource) in the identity provider: the tokens' aud", &s.AdminAudience),
-			str("admin-detail-type", "Authorization details type of the admin API in the IdP's tokens (default urn:gossiper:admin)", &s.AdminDetailType),
+			str("admin-detail-type", "Authorization details type of the admin API in the IdP's tokens (default: urn:gossiper:admin)", &s.AdminDetailType),
 			str("admin-scope", "A scope of the IdP's tokens that gives full access to the admin API (for an IdP without authorization details)", &s.AdminScope),
 		},
 		Run: func(ctx context.Context, _ *cli.Command) error { return serve(ctx, *s) },
@@ -357,16 +357,22 @@ func checkReady(ctx context.Context, target string) error {
 	return nil
 }
 
-// readyURL is the readiness URL of a server listening on listen: its port on the loopback address.
+// readyURL is the readiness URL of a server listening on listen: its port on the address it listens on, or the
+// loopback address when it listens on every address.
 func readyURL(listen string, httpOnly bool) string {
-	scheme, port := "https", "8080"
+	scheme, host, port := "https", "127.0.0.1", "8080"
 	if httpOnly {
 		scheme = "http"
 	}
-	if _, p, err := net.SplitHostPort(listen); err == nil && p != "" {
-		port = p
+	if h, p, err := net.SplitHostPort(listen); err == nil {
+		if p != "" {
+			port = p
+		}
+		if ip := net.ParseIP(h); h != "" && (ip == nil || !ip.IsUnspecified()) {
+			host = h
+		}
 	}
-	return scheme + "://" + net.JoinHostPort("127.0.0.1", port) + "/readyz"
+	return scheme + "://" + net.JoinHostPort(host, port) + "/readyz"
 }
 
 func genkeyCmd() *cli.Command {

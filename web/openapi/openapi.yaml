@@ -8,13 +8,13 @@ info:
   description: |-
     Add, change and remove tenants while the server runs. A tenant has a Mercure hub of its own, picked by host name, with its own keys, isolated from every other tenant.
 
-    The API is served when the server has a database (`--database`) and an API token (`--api-token`). Changes are stored in the database of the node that receives them and replicate to every node of the cluster group, each of which applies them at once, without a restart: there is no need to call every node.
+    The API is served when the server has a database (`--database`) and an API token (`--api-token`), an identity provider (`--admin-issuer`), or both. Changes are stored in the database of the node that receives them and replicate to every node of the cluster group, each of which applies them at once, without a restart: there is no need to call every node.
 
     Tenants can also come from the tenants file (`--tenants-file`). The server serves both: those of the file are read-only here (source `file`) and a tenant of the database cannot take the name of one. A change that would leave the tenants inconsistent (a host or key given to two tenants) is refused with 409 and changes nothing.
 
     Secrets are write-only: HMAC keys are never returned, so a PUT, which replaces the tenant, must carry them again. Public keys (PEM) are returned.
 
-    Authenticate with the API token as a bearer token: `Authorization: Bearer <token>`. Failed authentications are limited to 60 per address and minute; past that every request from the address answers 429 for the rest of the minute.
+    Authenticate with the API token as a bearer token: `Authorization: Bearer <token>`. Failed authentications are limited to 60 per address and minute; past that every request from the address answers 429 for the rest of the minute. 429 also answers when four API token hashes (bcrypt) are already being checked.
 servers:
   - url: /
     description: this server
@@ -56,7 +56,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: {$ref: "#/components/schemas/TenantInput"}
+            schema: {$ref: "#/components/schemas/NewTenantInput"}
       responses:
         "201":
           description: Created
@@ -121,7 +121,8 @@ paths:
     delete:
       tags: [Tenants]
       summary: Delete a tenant
-      description: Delete the tenant. Its hub closes on every node.
+      description: >-
+        Delete the tenant: its hub closes on every node, its streams end and its history is deleted, on this node just after the answer and on the others as the change reaches them. A tenant created again under the name later starts empty. A tenant of the tenants file cannot be deleted (409), but a database record that one of its names hides can.
       operationId: delete_tenant
       responses:
         "204":
@@ -212,7 +213,7 @@ components:
         application/json:
           schema: {$ref: "#/components/schemas/Error"}
     TooManyRequests:
-      description: Too many failed authentications from this address
+      description: Too many failed authentications from this address, or too many API token hashes being checked at once
       headers:
         Retry-After:
           schema: {type: integer}
@@ -235,7 +236,7 @@ components:
       type: object
       additionalProperties: false
       required: [hosts, mercure]
-      description: A tenant needs at least one host, which picks its hub, and Mercure settings (an empty object takes the server's).
+      description: A tenant needs at least one host, which picks its hub, and Mercure settings, its keys among them (a hub without keys accepts no token). The server's other settings (limits, history, timeouts) apply to every tenant's hub.
       properties:
         name:
           $ref: "#/components/schemas/TenantName"
@@ -245,6 +246,11 @@ components:
           description: Host names (no port) at which clients reach the tenant's hub; each belongs to one tenant
           items: {type: string}
         mercure: {$ref: "#/components/schemas/MercureInput"}
+    NewTenantInput:
+      description: A new tenant, with its name.
+      allOf:
+        - {$ref: "#/components/schemas/TenantInput"}
+        - {type: object, required: [name]}
     Tenant:
       type: object
       required: [name, source]

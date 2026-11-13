@@ -122,6 +122,9 @@ type Config struct {
 	// NodeID names this node in published updates. Default: the transport's, or a random one.
 	NodeID string
 
+	// since is the hub's tenant's Since as an HLC stamp (0: none): updates stamped before it are ignored.
+	since uint64
+
 	// Logger receives the hub's logs. Default: none.
 	Logger logger.Logger
 }

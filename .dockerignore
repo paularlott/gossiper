@@ -5,3 +5,10 @@ test/compat
 **/node_modules
 web/dist
 *.db
+# local settings and state: never in the build context (.env holds signing credentials)
+.env
+.env.*
+.claude
+.task
+data
+bin

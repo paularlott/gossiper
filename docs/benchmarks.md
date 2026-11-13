@@ -42,7 +42,7 @@ on the same Docker network. Each workload ran twice, with the hubs interleaved, 
 | --- | --- |
 | `dunglas/mercure` 1.1.5, as shipped | its default configuration plus `anonymous`: its transport writes every update to a file before the publish returns |
 | `dunglas/mercure`, in memory | `transport local`: nothing on disk |
-| Gossiper | `serve --anonymous` |
+| Gossiper | `serve --anonymous --http-only --max-subscribers-per-ip 0` |
 | Gossiper, `--history-db` | the same, with the history in SQLite on a Docker volume: the one to compare with the official hub's file |
 
 Inside Docker the network costs more than on the host, so these figures are lower than the native ones below.

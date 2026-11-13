@@ -526,11 +526,13 @@ func (a *adminAPI) change(ctx context.Context, fn func(tx *configstore.Tx) error
 
 func (a *adminAPI) deleteTenant(w http.ResponseWriter, r *http.Request) error {
 	name := r.PathValue("tenant")
-	if a.s.fileTenant(name) {
-		return fail(http.StatusConflict, "tenant %q is defined in the tenants file", name)
-	}
+	// A database record the tenants file shadows can still be deleted (it would come back when the file drops the
+	// name); the file's tenant itself cannot.
 	err := a.change(r.Context(), func(tx *configstore.Tx) error {
 		if _, ok := tx.Get(tenantKey(name)); !ok {
+			if a.s.fileTenant(name) {
+				return fail(http.StatusConflict, "tenant %q is defined in the tenants file", name)
+			}
 			return fail(http.StatusNotFound, "no tenant %q", name)
 		}
 		tx.Delete(tenantKey(name))

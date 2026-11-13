@@ -71,8 +71,14 @@ type Hub struct {
 	pubMu      sync.Mutex // guards pubClosed, and publishers.Add against Close
 	pubClosed  bool
 	publishers sync.WaitGroup // publishes in progress: Close waits for them before it stops the transport
-	stop       chan struct{}  // ends the housekeeping loop
-	done       chan struct{}
+
+	applyMu     sync.RWMutex // guards applyClosed, and applying.Add against Close
+	applyClosed bool
+	applying    sync.WaitGroup // updates being applied: Close waits for them, so none is stored after it returns
+
+	since uint64        // updates stamped before it were a former tenant's of this name (Config.since)
+	stop  chan struct{} // ends the housekeeping loop
+	done  chan struct{}
 
 	stats Stats
 
@@ -119,6 +125,7 @@ func New(c Config) (*Hub, error) {
 		urls:      urlpattern.NewMatcher(base.String(), cfg.MatchCacheSize),
 		base:      base,
 		clock:     hlc.NewClock(),
+		since:     cfg.since,
 		hist:      newHistory(cfg.HistorySize, cfg.HistoryBytes, cfg.HistoryAge, cfg.ReplayWindow),
 		subs:      map[*subscriber]struct{}{},
 		exact:     map[string]map[*subscriber]struct{}{},
@@ -128,6 +135,8 @@ func New(c Config) (*Hub, error) {
 		done:      make(chan struct{}),
 	}
 	h.closingCtx, h.endCtx = context.WithCancel(context.Background())
+	// What it publishes orders after its tenant's creation, whichever node created it (within the bound on skew).
+	h.clock.WitnessBounded(hlc.Timestamp(h.since), maxWitnessAhead)
 	if err := h.newVerifiers(); err != nil {
 		h.closeVerifiers()
 		return nil, err
@@ -413,6 +422,17 @@ func (h *Hub) apply(u *Update, restored bool) {
 	if u.Tenant != h.tenant { // another tenant's update, reaching a node that does not run that tenant as a hub
 		return
 	}
+	if u.Stamp < h.since { // a former tenant's of this name, deleted since: from a peer that missed it, or the store
+		return
+	}
+	h.applyMu.RLock()
+	if h.applyClosed { // the hub is closing: nothing more goes into its history or its store
+		h.applyMu.RUnlock()
+		return
+	}
+	h.applying.Add(1)
+	h.applyMu.RUnlock()
+	defer h.applying.Done()
 	if u.Origin != h.nodeID && !h.clock.WitnessBounded(hlc.Timestamp(u.Stamp), maxWitnessAhead) {
 		// Kept, it would sort after everything published here for as long as the skew lasts, and a cursor at it would
 		// skip those updates on reconnection.
@@ -647,6 +667,9 @@ func (h *Hub) Close(ctx context.Context) error {
 		h.pubMu.Lock()
 		h.pubClosed = true
 		h.pubMu.Unlock()
+		h.applyMu.Lock()
+		h.applyClosed = true
+		h.applyMu.Unlock()
 		for s := range h.subs {
 			if s.closed != nil {
 				close(s.closed)
@@ -655,7 +678,7 @@ func (h *Hub) Close(ctx context.Context) error {
 		}
 		h.mu.Unlock()
 		waited := make(chan struct{})
-		go func() { h.streams.Wait(); h.publishers.Wait(); close(waited) }()
+		go func() { h.streams.Wait(); h.publishers.Wait(); h.applying.Wait(); close(waited) }()
 		select {
 		case <-waited:
 		case <-ctx.Done():

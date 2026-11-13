@@ -1,6 +1,6 @@
-# Contributing to Gossiper Library
+# Contributing to Gossiper
 
-Thank you for your interest in contributing to Gossiper Library. We welcome improvements, bug fixes, documentation updates, and new ideas. This guide explains how to contribute and the legal requirements for submitting code.
+Thank you for your interest in contributing to Gossiper. We welcome improvements, bug fixes, documentation updates, and new ideas. This guide explains how to contribute and the legal requirements for submitting code.
 
 ---
 
@@ -45,7 +45,7 @@ Create your own fork and work in a feature branch.
 
 ### 2. Make your changes
 
-Follow existing code style and include tests where appropriate.
+Follow existing code style and include tests where appropriate. [Development](README.md#development) lists the build and test tasks; `task lint` and `task test:race` should pass.
 
 ### 3. Commit your work
 
@@ -90,5 +90,5 @@ Please read and adhere to our **[Code of Conduct](CODE_OF_CONDUCT.md)**.
 
 ## 7. License
 
-- The Gossip Library Core Project is licensed under the **[MIT](LICENSE.txt)**.
+- Gossiper is licensed under the **[MIT](LICENSE.txt)**.
 - Your contributions are licensed under the terms of the shared **[Contributor License Agreement (CLA)](https://github.com/paularlott/cla/blob/main/CONTRIBUTOR_LICENSE_AGREEMENT.md)**, which covers every open-source project under github.com/paularlott.

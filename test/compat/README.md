@@ -12,13 +12,13 @@ go test -tags compat -count=1 -v ./test/compat/          # ~65 s
 docker compose -f test/compat/docker-compose.yml down -v
 ```
 
-`COMPAT_UP=1` makes the test start the stack itself. Needs Docker, Go and Node 20+ (the JS test runs `npm install` of
+`COMPAT_UP=1` makes the test start the stack itself. Needs Docker, Go and Node 24 (the JS test runs `npm install` of
 `eventsource` once). The whole run takes about 3 minutes.
 
 | Host port | Container | Role |
 |---|---|---|
 | 13000 | gossiper (`--protocol both`) | must pass the legacy and the Mercure 1.0 suites |
-| 13001 | gossiper `--modern-subscription-format` | draft-07 hub with the current subscription format |
+| 13001 | gossiper-modern (`--protocol both --modern-subscription-format`) | draft-07 hub with the current subscription format |
 | 13002 | app | FrankenPHP without hub, the PHP app publishing to 13000 |
 | 13003 | reference | FrankenPHP built-in hub, `protocol_version_compatibility 8` (the legacy reference) + the PHP app |
 | 13004 | gossiper-v1 (`--protocol modern`) | Mercure 1.0 only |
@@ -32,8 +32,8 @@ The run writes `last-run-differences.txt` (every difference seen, classified `kn
 
 ## Layout
 
-- `Dockerfile` (+ `.dockerignore`): Gossiper, multi-stage `golang:1.27.3-alpine` build from the repo root.
-- `docker-compose.yml`: gossiper, gossiper-modern, app (FrankenPHP without hub, `MERCURE_URL=http://gossiper:3000/.well-known/mercure`), reference (FrankenPHP with hub).
+- `Dockerfile` (+ `.dockerignore`): Gossiper, multi-stage `golang:1.27.4-alpine` build from the repo root.
+- `docker-compose.yml`: gossiper, gossiper-modern, gossiper-v1, app and app-v1 (FrankenPHP without hub, publishing to gossiper and gossiper-v1), reference and reference-modern (FrankenPHP with its hub, legacy and Mercure 1.0 modes).
 - `php/`: the app on the official `symfony/mercure`, two composer projects (the two library versions cannot share a process; `public/index.php` routes):
   - `legacy/` symfony/mercure 0.7 (protocol 0.x): `/publish?topic=..&data=..&private=1&id=..&type=..&retry=..` (Hub + Update + FactoryTokenProvider/LcobucciFactory, returns the id), `/discover` (Symfony `Discovery` Link header, `Authorization::createCookie` -> `mercureAuthorization` cookie), `/info`.
   - `v1/` symfony/mercure 0.9 (protocol 1.0, RFC 9068 `at+jwt` with `iss`, `aud`, `sub`, `client_id`, `exp`, `authorization_details`): `/v1/publish` (same parameters, plus `grant=exact:T|urlpattern:P` to narrow the publisher token), `/v1/discover` (Link header; the library refuses the `__Secure-` cookie over plain HTTP, so the token is also returned in the JSON body), `/v1/info`.
@@ -102,14 +102,13 @@ choice (draft-07 format, limits, `both` mode affordances) or leniency/strictness
 | Area | Reference | Gossiper | Matters? |
 |---|---|---|---|
 | Default subscription events/API | `event: mercure`, `application/json`, type `subscription(s)` | draft-07: no event type, `@context`, `application/ld+json`, `Subscription(s)` | Only for clients of the subscription API; `--modern-subscription-format` is identical (tested) |
-| `Access-Control-Expose-Headers` | `Accept-Query, Link, Mercure-Last-Event-ID` | `Link, Last-Event-ID, Mercure-Last-Event-ID` | No |
+| `Access-Control-Expose-Headers` | `Accept-Query, Link, Mercure-Last-Event-ID` | adds `Last-Event-ID` | No |
 | `WWW-Authenticate` | adds `resource_metadata=` (OAuth) | plain `Bearer [error=..]` | No; error codes equal |
 | Token that cannot be decoded (bad base64 payload; bad token in cookie or `?authorization=`) | 401 invalid_token (query: bare Bearer) | 400 invalid_request | No, both are auth failures |
 | `?authorization=garbage` on subscribe | ignored, streams anonymously (200) | 400 | Minor (stricter) |
 | `Authorization: <jwt>` without `Bearer` | 400 | accepted | Minor (lenient; nonstandard clients) |
 | Origin `http://example.com/` (trailing slash) for cookie publish | 400 | accepted | No (browsers never send it) |
 | `topic=` empty on subscribe | opens a stream | 400 | No |
-| `match=` subscription param (newer protocol) | accepted | 400 (only `topic`) | Only for clients using the newer parameter; `topic` is what Symfony/Mercure JS use |
 | `Last-Event-ID` query parameter (draft-07 name) | ignored | honoured | No (superset) |
 | `retry=` empty / `retry=0` on publish | empty ignored; 0 dropped | empty 400; `retry: 0` sent | Minor: `retry: 0` makes browsers reconnect with no delay; Symfony never sends it |
 | `type` longer than 256 bytes | accepted | 400 | Minor (limit) |

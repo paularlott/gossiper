@@ -101,6 +101,7 @@ func (s *Server) resolveTenants(list func(string) []configstore.Record, check fu
 			continue
 		}
 		names[name] = true
+		t.created = e.created
 		out = append(out, resolvedTenant{spec: t})
 	}
 	return out, problems
@@ -341,7 +342,7 @@ func (s *Server) applyMercure(all []tenantSpec) {
 	}
 	pending := map[string]tenantSpec{}
 	for name, t := range want {
-		if old, ok := s.mercureApplied[name]; !ok || !sameJSON(old, t) {
+		if old, ok := s.mercureApplied[name]; !ok || old.created != t.created || !sameJSON(old, t) {
 			pending[name] = t
 		}
 	}
@@ -369,7 +370,8 @@ func (s *Server) applyMercure(all []tenantSpec) {
 			wg.Go(func() {
 				defer func() { <-slots }()
 				var err error
-				if had && sameJSON(old.Mercure, t.Mercure) {
+				// A tenant created again (another created) is a new tenant: Set replaces it, history and all.
+				if had && old.created == t.created && sameJSON(old.Mercure, t.Mercure) {
 					err = s.Tenants.SetHosts(name, t.Hosts)
 				} else {
 					err = s.Tenants.Set(mercureTenants(s.baseConfig, []tenantSpec{t})[0])

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/paularlott/gossiper"
 	"github.com/paularlott/gossiper/auth"
@@ -23,6 +24,10 @@ type tenantSpec struct {
 	Name    string         `json:"name"`
 	Hosts   []string       `json:"hosts,omitempty"`
 	Mercure *tenantMercure `json:"mercure,omitempty"`
+
+	// created is when a database tenant was created, in Unix nanoseconds (0 for the file's): a tenant deleted and
+	// created again has another, and is a new tenant (gossiper.Tenant.Since). Not part of the spec's JSON.
+	created int64
 }
 
 // tenantMercure is a tenant's Mercure hub settings; the rest are the server's.
@@ -155,7 +160,11 @@ func mercureTenants(base gossiper.Config, specs []tenantSpec) []gossiper.Tenant 
 		if m.AccessTokenCookieName != "" {
 			cfg.AccessTokenCookieName = m.AccessTokenCookieName
 		}
-		out = append(out, gossiper.Tenant{Name: t.Name, Hosts: t.Hosts, Config: cfg})
+		tenant := gossiper.Tenant{Name: t.Name, Hosts: t.Hosts, Config: cfg}
+		if t.created != 0 {
+			tenant.Since = time.Unix(0, t.created)
+		}
+		out = append(out, tenant)
 	}
 	return out
 }

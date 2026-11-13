@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/paularlott/gossip/hlc"
 
@@ -26,6 +27,11 @@ type Tenant struct {
 	Hosts []string
 	// Config configures the tenant's hub. Its Transport must be nil: the hubs share the Tenants' transport.
 	Config Config
+	// Since is when the tenant was created (zero: no bound). A tenant deleted and created again under its name is a
+	// new tenant: updates stamped before Since were the former one's, and its hub ignores them wherever they come
+	// from (a peer, a peer's history, the history store). Set with another Since replaces the tenant as Remove and
+	// a fresh Set would, history and all. Give every node the same Since for a tenant.
+	Since time.Time
 }
 
 // Tenants serves the hubs of several tenants on one set of paths, over one transport. A tenant's subscribers
@@ -45,6 +51,10 @@ type Tenants struct {
 	mu     sync.Mutex // serializes the changes, and the changes with Close
 	closed bool
 	busy   sync.WaitGroup // changes under way, and the hubs they replaced or removed, still closing
+
+	statsMu sync.Mutex
+	leaving map[*Hub]struct{} // hubs removed or replaced, still closing: Stats counts them
+	retired StatsSnapshot     // the counters of the hubs that closed, so Stats' counters never go down
 
 	budget     *budget // the histories' shared budget, or nil
 	stopBudget chan struct{}
@@ -294,6 +304,9 @@ func checkConfig(c Config) error {
 func (ts *Tenants) newHub(t Tenant) (*Hub, error) {
 	cfg := t.Config
 	cfg.Transport = &tenantTransport{shared: ts.shared, tenant: t.Name}
+	if !t.Since.IsZero() {
+		cfg.since = uint64(hlc.FromTime(t.Since))
+	}
 	h, err := New(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("tenants: tenant %q: %w", t.Name, err)
@@ -304,7 +317,7 @@ func (ts *Tenants) newHub(t Tenant) (*Hub, error) {
 	// The hubs stamp with one clock: they share this node's origin, and two updates stamped alike by two tenants would
 	// be one publication to whatever orders them by (stamp, origin) across tenants (a peer's history pages). The hub
 	// is not reachable yet: nothing reads its clock meanwhile.
-	ts.clock.Witness(h.clock.Now()) // what its history restored
+	ts.clock.Witness(h.clock.Now()) // what its history restored, and its Since
 	h.clock = ts.clock
 	return h, nil
 }
@@ -321,6 +334,15 @@ func (ts *Tenants) Set(t Tenant) error {
 	if ts.closed {
 		ts.mu.Unlock()
 		return ErrClosed
+	}
+	if old := ts.set.Load().hubs[t.Name]; old != nil && old.since != sinceStamp(t.Since) {
+		// Another tenant of the same name: the former one goes first, its streams and stored history with it, so
+		// nothing of it reaches the new one.
+		ts.mu.Unlock()
+		if err := ts.Remove(context.Background(), t.Name); err != nil && !errors.Is(err, ErrNoTenant) {
+			return err
+		}
+		return ts.Set(t)
 	}
 	// The others' configs were checked when they were set: only t's is, and what it must not share with them.
 	err := checkConfig(t.Config)
@@ -361,12 +383,17 @@ func (ts *Tenants) Set(t Tenant) error {
 		h.clock = old.clock
 		h.hist.adopt(old.hist)
 	}
+	var closed func()
+	if old != nil {
+		closed = ts.leave(old)
+	}
 	ts.set.Store(cur.with(t, h))
 	ts.mu.Unlock()
 	if old != nil {
 		h.hist.adopt(old.hist) // the updates the old hub applied while the history was copied
 		old.hist.share(nil)    // the new hub holds them now
 		_ = old.Close(context.Background())
+		closed()
 	}
 	return nil
 }
@@ -408,12 +435,14 @@ func (ts *Tenants) Remove(ctx context.Context, name string) error {
 		ts.mu.Unlock()
 		return fmt.Errorf("%w %q", ErrNoTenant, name)
 	}
+	closed := ts.leave(h)
 	ts.set.Store(cur.without(name))
 	ts.busy.Add(1)
 	ts.mu.Unlock()
 	defer ts.busy.Done()
 	h.hist.share(nil) // gone from the budget at once, not when its streams have ended
 	err := h.Close(ctx)
+	closed()
 	// A tenant added again later starts afresh: its stored history does not come back.
 	if h.store != nil {
 		if derr := h.store.Drop(ctx, name); derr != nil {
@@ -421,6 +450,14 @@ func (ts *Tenants) Remove(ctx context.Context, name string) error {
 		}
 	}
 	return err
+}
+
+// sinceStamp is a Tenant's Since as a hub holds it: an HLC stamp, 0 for none.
+func sinceStamp(t time.Time) uint64 {
+	if t.IsZero() {
+		return 0
+	}
+	return uint64(hlc.FromTime(t))
 }
 
 // keyIdentity is a key (or key URL) as tenants compare them: a PEM key by its contents, whatever its line endings
@@ -524,24 +561,51 @@ func (ts *Tenants) LocalSubscriptions() []Subscription {
 
 // Stats returns the sum of the tenants' counters.
 func (ts *Tenants) Stats() StatsSnapshot {
-	var sum StatsSnapshot
+	ts.statsMu.Lock()
+	defer ts.statsMu.Unlock()
+	sum := ts.retired
 	for _, h := range ts.set.Load().hubs {
-		s := h.Stats()
-		sum.Subscribers += s.Subscribers
-		sum.Published += s.Published
-		sum.Applied += s.Applied
-		sum.Delivered += s.Delivered
-		sum.Dropped += s.Dropped
-		sum.Replayed += s.Replayed
-		sum.ReplayMisses += s.ReplayMisses
-		sum.Duplicates += s.Duplicates
-		sum.PublishRejected += s.PublishRejected
-		sum.Refused += s.Refused
-		sum.KeySetsFailing += s.KeySetsFailing
-		sum.HistoryLen += s.HistoryLen
-		sum.HistoryBytes += s.HistoryBytes
+		sum.add(h.Stats(), true)
+	}
+	for h := range ts.leaving {
+		sum.add(h.Stats(), false)
 	}
 	return sum
+}
+
+// add adds s's counters to st, and with gauges its gauges too.
+func (st *StatsSnapshot) add(s StatsSnapshot, gauges bool) {
+	st.Published += s.Published
+	st.Applied += s.Applied
+	st.Delivered += s.Delivered
+	st.Dropped += s.Dropped
+	st.Replayed += s.Replayed
+	st.ReplayMisses += s.ReplayMisses
+	st.Duplicates += s.Duplicates
+	st.PublishRejected += s.PublishRejected
+	st.Refused += s.Refused
+	if gauges {
+		st.Subscribers += s.Subscribers
+		st.KeySetsFailing += s.KeySetsFailing
+		st.HistoryLen += s.HistoryLen
+		st.HistoryBytes += s.HistoryBytes
+	}
+}
+
+// leave counts h, taken out of the set, in Stats while it closes; closed then keeps its final counters.
+func (ts *Tenants) leave(h *Hub) (closed func()) {
+	ts.statsMu.Lock()
+	if ts.leaving == nil {
+		ts.leaving = map[*Hub]struct{}{}
+	}
+	ts.leaving[h] = struct{}{}
+	ts.statsMu.Unlock()
+	return func() {
+		ts.statsMu.Lock()
+		defer ts.statsMu.Unlock()
+		delete(ts.leaving, h)
+		ts.retired.add(h.Stats(), false)
+	}
 }
 
 // ServeHTTP serves each request with the hub of the tenant its host belongs to.

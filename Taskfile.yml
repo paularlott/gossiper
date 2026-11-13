@@ -1,5 +1,8 @@
 version: "3"
 
+# Local settings (gitignored, see .env.example): the macOS signing identity and notary key, and the local registry.
+dotenv: [".env"]
+
 vars:
   PROJECT_NAME: gossiper
   MAIN: ./cmd/gossiper
@@ -96,7 +99,7 @@ tasks:
 
   all:
     desc: Build zipped binaries for every platform into bin/
-    deps: [webassets]
+    deps: [webassets, legal]
     cmds:
       - task: build-platform
         vars: { PLATFORM: "{{.ITEM}}" }
@@ -130,14 +133,15 @@ tasks:
           codesign --force --timestamp --options runtime --identifier com.paularlott.{{$.PROJECT_NAME}} \
             --sign "$MACOS_SIGN_IDENTITY" {{.STAGE}}/{{$.PROJECT_NAME}} || exit 1
         fi
-      - cp LICENSE.txt README.md {{.STAGE}}/
-      - cd {{.STAGE}} && zip -q ../{{.ZIP_FILE}} {{$.PROJECT_NAME}}{{.EXT}} LICENSE.txt README.md
+      - cp LICENSE.txt THIRD_PARTY_LICENSES.txt README.md {{.STAGE}}/
+      - cd {{.STAGE}} && zip -q ../{{.ZIP_FILE}} {{$.PROJECT_NAME}}{{.EXT}} LICENSE.txt THIRD_PARTY_LICENSES.txt README.md
       - rm -rf {{.STAGE}}
     sources:
       - ./**/*.go
       - go.mod
       - go.sum
       - web/dist/**/*
+      - THIRD_PARTY_LICENSES.txt
     generates:
       - "{{$.OUTPUT_DIR}}/{{.ZIP_FILE}}"
 
@@ -260,12 +264,15 @@ tasks:
       - task: apidocs-lint
 
   legal:
-    desc: Generate the third-party license report in the project root (needs go-licenses)
+    desc: Write the third-party notices (Go modules and bundled JavaScript) to THIRD_PARTY_LICENSES.txt (needs go-licenses)
+    deps: [webassets]
     cmds:
-      - go-licenses report --ignore github.com/paularlott/gossiper ./... > THIRD_PARTY_LICENSES.txt
+      - scripts/licenses.sh > THIRD_PARTY_LICENSES.txt.tmp && mv THIRD_PARTY_LICENSES.txt.tmp THIRD_PARTY_LICENSES.txt
     sources:
       - go.mod
       - go.sum
+      - web/dist/licenses.md
+      - scripts/licenses.*
     generates:
       - THIRD_PARTY_LICENSES.txt
 
@@ -300,43 +307,89 @@ tasks:
     ignore_error: true
 
   container:
-    desc: Build the container image for linux/amd64 and linux/arm64 and push it
+    desc: Build the container image for linux/amd64 and linux/arm64 and push it to Docker Hub (REGISTRY) as :<version> and :latest
+    method: none
+    cmds:
+      - task: container-build
+        vars: { PUSH: "true" }
+
+  container:local:
+    desc: Build the container image for linux/amd64 and linux/arm64 and push it to the local registry (LOCAL_REGISTRY in .env) instead of Docker Hub
+    method: none
+    preconditions:
+      - sh: test -n "$LOCAL_REGISTRY"
+        msg: "set LOCAL_REGISTRY in .env (e.g. hub.anaconda.ovh/library): see .env.example"
+    cmds:
+      - task: container-build
+        vars:
+          PUSH: "true"
+          REGISTRY: "{{.LOCAL_REGISTRY}}"
+          # Pull the base images through the local registry's Docker Hub cache when LOCAL_HUB is set.
+          HUB: '{{.LOCAL_HUB | default .HUB}}'
+
+  container:check:
+    desc: Build the container image for linux/amd64 and linux/arm64 without pushing it, to check it builds
+    method: none
+    cmds:
+      - task: container-build
+        vars: { PUSH: "false" }
+
+  container-build:
+    internal: true
     method: none
     cmds:
       - |
         echo "Detected container runtime: {{.BUILD_WITH}}"
         echo "Building for platforms: {{.PLATFORM_ARG}}"
 
+        image="{{.REGISTRY}}/{{.PROJECT_NAME}}"
+        tags="$image:{{.VERSION}} $image:latest"
+        set -- $tags
+        first=$1
+        if [ "{{.PUSH}}" = "true" ]; then
+          echo "Pushing: $tags"
+        fi
+
         if [ "{{.BUILD_WITH}}" = "apple" ]; then
           container build \
             {{.PLATFORM_ARG}} \
-            --tag {{.REGISTRY}}/{{.PROJECT_NAME}}:{{.VERSION}} \
+            --tag "$first" \
             --build-arg BUILT_AT={{.BUILT_AT}} \
             --build-arg DOCKER_HUB={{.HUB}} \
-            .
-          container image tag {{.REGISTRY}}/{{.PROJECT_NAME}}:{{.VERSION}} {{.REGISTRY}}/{{.PROJECT_NAME}}:latest
-          container images push {{.REGISTRY}}/{{.PROJECT_NAME}}:{{.VERSION}}
-          container images push {{.REGISTRY}}/{{.PROJECT_NAME}}:latest
+            . || exit 1
+          if [ "{{.PUSH}}" = "true" ]; then
+            for tag in $tags; do
+              if [ "$tag" != "$first" ]; then container image tag "$first" "$tag" || exit 1; fi
+              container images push "$tag" || exit 1
+            done
+          fi
         elif [ "{{.BUILD_WITH}}" = "podman" ]; then
-          podman manifest create {{.REGISTRY}}/{{.PROJECT_NAME}}:{{.VERSION}}
+          podman manifest rm "$first" >/dev/null 2>&1 || true
+          podman manifest create "$first" || exit 1
           podman build \
             {{.PLATFORM_ARG}} \
             --build-arg BUILT_AT={{.BUILT_AT}} \
             --build-arg DOCKER_HUB={{.HUB}} \
-            --manifest {{.REGISTRY}}/{{.PROJECT_NAME}}:{{.VERSION}} \
-            .
-          podman tag {{.REGISTRY}}/{{.PROJECT_NAME}}:{{.VERSION}} {{.REGISTRY}}/{{.PROJECT_NAME}}:latest
-          podman manifest push {{.REGISTRY}}/{{.PROJECT_NAME}}:{{.VERSION}}
-          podman manifest push {{.REGISTRY}}/{{.PROJECT_NAME}}:latest
+            --manifest "$first" \
+            . || exit 1
+          if [ "{{.PUSH}}" = "true" ]; then
+            for tag in $tags; do
+              podman manifest push "$first" "docker://$tag" || exit 1
+            done
+          fi
         elif [ "{{.BUILD_WITH}}" = "docker" ]; then
+          tagargs=""
+          for tag in $tags; do
+            tagargs="$tagargs --tag $tag"
+          done
+          if [ "{{.PUSH}}" = "true" ]; then output="--push"; else output="--output=type=cacheonly"; fi
           docker buildx build \
             {{.PLATFORM_ARG}} \
-            --tag {{.REGISTRY}}/{{.PROJECT_NAME}}:{{.VERSION}} \
-            --tag {{.REGISTRY}}/{{.PROJECT_NAME}}:latest \
+            $tagargs \
             --build-arg BUILT_AT={{.BUILT_AT}} \
             --build-arg DOCKER_HUB={{.HUB}} \
-            --push \
-            .
+            $output \
+            . || exit 1
         else
           echo "No container runtime found (docker, podman or Apple container)" >&2
           exit 1
