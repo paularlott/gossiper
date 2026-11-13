@@ -198,7 +198,7 @@ Alpine.data('status', () => ({
       )
       if (d.mode === 'cluster') {
         rows.push(
-          { label: 'Peers synced', value: num(s.peers_synced) + ' of ' + num(s.peers), warn: s.peers_synced < s.peers },
+          { label: 'Other nodes synced', value: num(s.peers_synced) + ' of ' + num(s.peers), warn: s.peers_synced < s.peers },
           { label: 'Last sync', value: this.ago(s.last_sync), warn: false },
           { label: 'Syncs', value: num(s.syncs), warn: false },
           { label: 'Repairs', value: num(s.repairs), warn: false },
