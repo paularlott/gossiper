@@ -10,6 +10,7 @@ The TOML file is `-c`/`--config` (`GOSSIPER_CONFIG`), or else `gossiper.toml` in
 | --- | --- | --- |
 | `--listen` | `:8080` | address (HTTPS unless `--http-only`) |
 | `--admin-listen` | on `--listen` | address of the admin API, its reference, metrics and profiling |
+| `--admin-ui` | on | the [status page](admin-ui.md) at `/` on the admin listener, with no login (`--admin-ui=false` turns it off) |
 | `--trusted-proxies` | | proxies (addresses, CIDR ranges) whose `X-Forwarded-For` names the client; set it behind a load balancer |
 | `--trust-forwarded-proto` | off | take the client's scheme from `X-Forwarded-Proto` (behind a proxy that terminates TLS) |
 | `--http-only` | off | plain HTTP, behind a proxy that terminates TLS |

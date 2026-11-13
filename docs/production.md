@@ -45,5 +45,6 @@ Gossiper serves HTTPS (HTTP/2 included) unless `--http-only`.
 | `/metrics` | Prometheus metrics (`--metrics`) |
 | `/api/…`, `/api/openapi.json`, `/api-docs/` | the [admin API](multi-tenancy.md#admin-api), its OpenAPI document and reference (`--api-token`, `--admin-issuer` or both) |
 | `/debug/pprof/` | Go profiling (`--pprof`; keep it off in production) |
+| `/`, `/ui/status.json` | the [status page](admin-ui.md) and its JSON, with no login (admin listener only; `--admin-ui=false` turns them off) |
 
-With `--admin-listen` the last three are served there and not on `--listen`.
+With `--admin-listen` the metrics, the admin API and profiling are served there and not on `--listen`.

@@ -1,13 +1,32 @@
-// Builds web/dist, which the Go binary embeds (web/embed.go): the OpenAPI document (/api/openapi.json) and the API
-// reference (/api-docs/). Everything is bundled from node_modules; the page loads nothing from a CDN, so the server
-// works on a network without internet access.
+// Builds web/dist, which the Go binary embeds (web/embed.go): the OpenAPI document (/api/openapi.json), the API
+// reference (/api-docs/) and the status page (/ on the admin listener). Everything is bundled from node_modules; the
+// pages load nothing from a CDN, so the server works on a network without internet access.
 import { defineConfig } from 'vite'
+import tailwindcss from '@tailwindcss/vite'
 import { execFileSync } from 'node:child_process'
 import { readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { gzipSync } from 'node:zlib'
 import { resolve } from 'node:path'
 
 const here = import.meta.dirname
+
+const MIT_TERMS = `Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.`
 
 // emptyOutDir clears web/dist, including the committed placeholder that lets the Go packages compile before a build.
 const keepPlaceholder = {
@@ -30,6 +49,47 @@ const redocNotices = {
     writeFileSync(file, readFileSync(file, 'utf8') + '\n## Packages bundled in redoc.standalone.js\n\n' +
       notices.map((n) => '```\n' + n + '\n```\n').join('\n'))
   },
+}
+
+// Alpine.js's CSP build (@alpinejs/csp) ships without its licence file, and carries Vue's reactivity packages inside
+// it: build.license names the package alone. Alpine's MIT licence, and the notices of the packages its bundle lists,
+// are added to licenses.md; the build fails if the bundle stops listing them, so the plugin is reviewed on an upgrade.
+const alpineLicense = `MIT License
+
+Copyright © 2019-2021 Caleb Porzio and contributors
+
+` + MIT_TERMS
+const alpineNotices = {
+  name: 'alpine-notices',
+  writeBundle(opts) {
+    const bundle = readFileSync(resolve(here, 'node_modules/@alpinejs/csp/dist/module.esm.js'), 'utf8')
+    const info = bundle.match(/\/\*! Bundled license information:\n([\s\S]*?)\*\//)
+    if (!info || !/@vue\/reactivity/.test(info[1])) throw new Error('alpine-notices: no bundled licence information in @alpinejs/csp')
+    const vue = readFileSync(resolve(here, 'node_modules/@vue/reactivity/LICENSE'), 'utf8').trim()
+    const file = resolve(opts.dir, 'licenses.md')
+    writeFileSync(file, readFileSync(file, 'utf8') + '\n## Alpine.js (@alpinejs/csp)\n\n```\n' + alpineLicense + '\n```\n' +
+      '\n## Packages bundled in @alpinejs/csp\n\n```\n' + info[1].trim() + '\n```\n\n```\n' + vue + '\n```\n')
+  },
+}
+
+// The status page's stylesheet is Tailwind CSS's output: no package of it is bundled, so build.license does not list
+// it. Its licence is added to licenses.md as Tailwind ships it.
+const tailwindNotice = {
+  name: 'tailwind-notice',
+  writeBundle(opts) {
+    const pkg = JSON.parse(readFileSync(resolve(here, 'node_modules/tailwindcss/package.json'), 'utf8'))
+    const text = readFileSync(resolve(here, 'node_modules/tailwindcss/LICENSE'), 'utf8').trim()
+    const file = resolve(opts.dir, 'licenses.md')
+    writeFileSync(file, readFileSync(file, 'utf8') + `\n## tailwindcss - ${pkg.version} (${pkg.license}), in the status page's stylesheet\n\n` +
+      '```\n' + text + '\n```\n')
+  },
+}
+
+// The status page (ui/index.html) is served at / and its assets at /ui/assets/ (the API reference's at
+// /api-docs/assets/): both are dist/assets, served by the same handler.
+const uiPage = resolve(here, 'ui/index.html')
+function builtURL(filename, { hostType, hostId }) {
+  if (hostType === 'html' && resolve(here, hostId) === uiPage) return '/ui/' + filename
 }
 
 // The binary embeds the scripts and stylesheets gzipped (Redoc is 2.3 MB, 0.7 MB gzipped): the server sends them as
@@ -93,17 +153,19 @@ export default defineConfig({
   root: here,
   base: '/api-docs/',
   publicDir: false,
-  plugins: [redocOffline, openapiJson, redocNotices, gzipAssets, keepPlaceholder],
+  plugins: [tailwindcss(), redocOffline, openapiJson, redocNotices, alpineNotices, tailwindNotice, gzipAssets, keepPlaceholder],
+  experimental: { renderBuiltUrl: builtURL },
   build: {
     outDir: 'dist',
     emptyOutDir: true,
     target: 'es2022',
     modulePreload: false,
     chunkSizeWarningLimit: 4096, // the API reference bundles Redoc (about 2 MB)
-    // The licences of the bundled packages (Redoc, React and theirs), for the release's THIRD_PARTY_LICENSES.txt.
+    // The licences of the bundled packages (Redoc, React and theirs; Alpine.js), for the release's
+    // THIRD_PARTY_LICENSES.txt.
     license: { fileName: 'licenses.md' },
     rolldownOptions: {
-      input: { 'api-docs': resolve(here, 'api-docs/index.html') },
+      input: { 'api-docs': resolve(here, 'api-docs/index.html'), ui: uiPage },
       output: {
         entryFileNames: 'assets/[name]-[hash].js',
         chunkFileNames: 'assets/[name]-[hash].js',

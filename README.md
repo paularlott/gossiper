@@ -30,7 +30,7 @@ Gossiper is a clustered, multi-tenant [Mercure](https://datatracker.ietf.org/doc
   ```
 
   It serves HTTPS with a self-signed certificate in `/data/tls` and logs JSON; see [the container image](docs/production.md#container-image).
-- **From source:** `go install github.com/paularlott/gossiper/cmd/gossiper@latest`. This build lacks the admin API's OpenAPI document and reference page (`/api/openapi.json` and `/api-docs/` answer 404), which need Node.js: see [Development](#development).
+- **From source:** `go install github.com/paularlott/gossiper/cmd/gossiper@latest`. This build lacks the admin API's OpenAPI document and reference page, and the status page (`/api/openapi.json`, `/api-docs/` and `/` answer 404), which need Node.js: see [Development](#development).
 
 ## Quick start
 
@@ -85,6 +85,7 @@ Gossiper reads FrankenPHP's `MERCURE_*` variables. `symfony/mercure` 0.9 or late
 | [Multi-tenancy](docs/multi-tenancy.md) | tenants, the tenants file, the admin API, signing in with an identity provider |
 | [Clustering](docs/clustering.md) | running nodes together, copies and idempotent publishes, history and reconnection |
 | [Running in production](docs/production.md) | a checklist, the container image, TLS, endpoints |
+| [Status page](docs/admin-ui.md) | the read-only dashboard on the admin listener, and its JSON |
 | [Configuration](docs/configuration.md) | every flag, environment variable and `gossiper.toml` key |
 | [Embedding](docs/embedding.md) | the hub as a Go package, and the packages |
 | [Benchmarks](docs/benchmarks.md) | throughput, latency and memory |

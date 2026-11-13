@@ -117,6 +117,7 @@ func serveCmd(s *server.Settings) *cli.Command {
 		Flags: []cli.Flag{
 			str("listen", "Address to listen on", &s.Listen),
 			str("admin-listen", "Address of a listener of its own for the admin API, its docs, metrics and profiling (default: on listen)", &s.AdminListen),
+			boolean("admin-ui", "Serve the status page at / on the admin listener, with no login (admin-listen only; --admin-ui=false turns it off)", &s.AdminUI),
 			strs("trusted-proxies", "Proxies (addresses or CIDR ranges) whose X-Forwarded-For header names the client, for the per-address limits (admin API failed logins, streams); set it behind a load balancer", &s.TrustedProxies),
 			boolean("http-only", "Serve plain HTTP (and HTTP/2 without TLS), behind a proxy that terminates TLS; HTTPS otherwise", &s.HTTPOnly),
 			str("tls-cert", "TLS certificate file (PEM), with tls-key; renewed files are picked up within an hour, or at once on SIGHUP (default: a self-signed certificate)", &s.TLSCert),
