@@ -69,28 +69,3 @@ func TestCopiesIdempotentAcrossNodes(t *testing.T) {
 		t.Fatalf("received %+v, want the order once, then the sentinel", evs)
 	}
 }
-
-// A peer that cannot store what it was asked to keep a copy of makes no copy.
-func TestCopiesUnstoredPeer(t *testing.T) {
-	nodes := newCluster(t, clusterOpts{n: 2, node: func(i int, o *nodeOpts) {
-		if i == 1 {
-			o.hub = func(c *gossiper.Config) { c.HistoryStore = failingStore{} }
-		}
-	}})
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	_, err := nodes[0].hub.Publish(ctx, &gossiper.Update{Topics: []string{topicA}, Replicas: 2})
-	if !errors.Is(err, gossiper.ErrNotReplicated) {
-		t.Fatalf("2 copies, the peer's store failing: %v", err)
-	}
-}
-
-// failingStore takes every update and never writes one.
-type failingStore struct{}
-
-func (failingStore) Load(string, func(*gossiper.Update)) error { return nil }
-func (failingStore) Save(*gossiper.Update) uint64              { return 1 }
-func (failingStore) Ready(context.Context) error               { return nil }
-func (failingStore) Wait(context.Context, uint64) error        { return errors.New("disk failing") }
-func (failingStore) Trim(string, uint64, string)               {}
-func (failingStore) Drop(context.Context, string) error        { return nil }

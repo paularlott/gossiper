@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 // adminCluster starts n nodes with a database each and the API, joined in one cluster. It returns the
@@ -22,7 +20,6 @@ func adminCluster(t *testing.T, n int) ([]*node, []Settings) {
 	var sets []Settings
 	for i := range n {
 		s := adminSettings(t, "")
-		s.NodeID = uuid.NewString()
 		s.Database = filepath.Join(t.TempDir(), fmt.Sprintf("node%d.db", i))
 		s.ClusterBind = binds[i]
 		s.ClusterKey = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="

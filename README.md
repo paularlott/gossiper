@@ -25,7 +25,7 @@ Gossiper is a clustered, multi-tenant [Mercure](https://datatracker.ietf.org/doc
   ```bash
   docker run -d -p 8080:8080 -v gossiper-data:/data \
     -e MERCURE_PUBLISHER_JWT_KEY="$(docker run --rm paularlott/gossiper genkey)" \
-    -e GOSSIPER_ANONYMOUS=true -e GOSSIPER_HISTORY_DB=/data/history.db \
+    -e GOSSIPER_ANONYMOUS=true -e GOSSIPER_DATABASE=/data/gossiper.db -e GOSSIPER_HISTORY_PERSIST=true \
     paularlott/gossiper
   ```
 

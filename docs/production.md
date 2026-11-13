@@ -8,7 +8,7 @@
 - **Admin API off the public port:** serve the admin API, its reference and the metrics on `--admin-listen` (for example `127.0.0.1:9090`, or an internal address). Without it they share `--listen`, and `--pprof` refuses to start.
 - **Behind a proxy or load balancer:** list it in `--trusted-proxies`, so the limits on failed admin logins and streams per address count each client rather than the proxy. Set `--shutdown-delay` (a few seconds) so it sees `/readyz` fail before the listeners close.
 - **Clocks:** synchronise the nodes' clocks (NTP or chrony). Updates stamped more than 5 seconds ahead of a node's clock are refused there.
-- **History across restarts:** `--history-db` (in the container, under `/data`).
+- **History across restarts:** a node that restarts in a running cluster copies it from a peer. To keep it through a restart with no peer up (a single node, or every node at once), set `--database` and `--history-persist` (in the container, under `/data`).
 - **Health checks:** point them at `/readyz`. It answers 503 while a node copies a peer's history and while it shuts down.
 - **Metrics:** scrape `--metrics` and watch `gossiper_dropped_subscribers_total`, `gossiper_replication_dropped_total`, `gossiper_refused_total` (clock skew between nodes), `gossiper_key_sets_failing`, `gossiper_history_bytes` and `gossiper_history_unwritten_total` (updates the disk could not keep up with).
 
@@ -16,7 +16,7 @@
 
 `paularlott/gossiper` (linux/amd64 and linux/arm64) is a distroless image running as the `nonroot` user (UID 65532).
 
-- **State** lives in the `/data` volume, which is also the working directory (where `gossiper.toml` is looked for). Put `--history-db` and `--database` there, e.g. `/data/history.db` and `/data/tenants.db`. Run as another UID only with a `/data` it can write.
+- **State** lives in the `/data` volume, which is also the working directory (where `gossiper.toml` is looked for). Put `--database` there, e.g. `/data/gossiper.db`. Run as another UID only with a `/data` it can write.
 - **TLS:** the self-signed certificate is kept in `/data/tls`. Give it a real one with `GOSSIPER_TLS_CERT` and `GOSSIPER_TLS_KEY`, or set `GOSSIPER_HTTP_ONLY=true` behind a proxy that terminates TLS.
 - **Logs** are JSON (`GOSSIPER_LOG_FORMAT=console` for plain text).
 - **Ports:** 8080 (the hub) and 7946 TCP and UDP (gossip) are exposed. Publish the admin port (`--admin-listen`, e.g. `:9090`) only to an internal network.
@@ -43,7 +43,7 @@ Gossiper serves HTTPS (HTTP/2 included) unless `--http-only`.
 | `/.well-known/oauth-protected-resource/.well-known/mercure` | protected resource metadata (Mercure 1.0) |
 | `/healthz`, `/readyz` | liveness, readiness (on the admin listener too) |
 | `/metrics` | Prometheus metrics (`--metrics`) |
-| `/api/…`, `/api/openapi.json`, `/api-docs/` | the [admin API](multi-tenancy.md#admin-api), its OpenAPI document and reference (`--database`, with `--api-token`, `--admin-issuer` or both) |
+| `/api/…`, `/api/openapi.json`, `/api-docs/` | the [admin API](multi-tenancy.md#admin-api), its OpenAPI document and reference (`--api-token`, `--admin-issuer` or both) |
 | `/debug/pprof/` | Go profiling (`--pprof`; keep it off in production) |
 
 With `--admin-listen` the last three are served there and not on `--listen`.

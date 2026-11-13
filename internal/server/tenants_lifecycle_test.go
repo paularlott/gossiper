@@ -15,12 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
-
 	_ "modernc.org/sqlite"
 )
 
-// historyRows counts the rows of the tenant in the history database file at path (opened read-only beside the
+// historyRows counts the rows of the tenant's history in the database file at path (opened read-only beside the
 // server's own connection; WAL lets both read).
 func historyRows(t *testing.T, path, tenant string) int {
 	t.Helper()
@@ -94,17 +92,17 @@ func TestDeleteThenRecreateNewKeysStartsAfresh(t *testing.T) {
 }
 
 // Delete, wait for it to apply, re-create: the hub, its streams, its in-memory and its stored history are gone, and
-// the new tenant starts empty (single node, history database).
+// the new tenant starts empty (single node, history written to its database).
 func TestDeleteThenRecreateAfterApply(t *testing.T) {
 	s := adminSettings(t, "")
-	s.HistoryDB = filepath.Join(t.TempDir(), "history.db")
+	s.HistoryPersist, s.HistoryFlush = true, "20ms"
 	n := startNode(t, s)
 	a := newTN(t, "alpha", false, false)
 	api(t, n.base, "POST", "/api/tenants", a.spec(t), 201)
 	eventually(t, 5*time.Second, "alpha served", func() bool { return serves(t, n, a) })
 	st := openStream(t, n.base, a.host, a.token(t, nil, []string{"*"}), url.Values{"topic": {sharedTopic}}, "")
 	mustPost(t, n.base, a.host, a.token(t, []string{"*"}, nil), url.Values{"topic": {sharedTopic}, "data": {"old"}})
-	eventually(t, 5*time.Second, "rows stored", func() bool { return historyRows(t, s.HistoryDB, "alpha") == 1 })
+	eventually(t, 5*time.Second, "rows stored", func() bool { return historyRows(t, s.Database, "alpha") == 1 })
 
 	api(t, n.base, "DELETE", "/api/tenants/alpha", nil, 204)
 	select {
@@ -113,7 +111,7 @@ func TestDeleteThenRecreateAfterApply(t *testing.T) {
 		t.Fatal("the stream did not end")
 	}
 	eventually(t, 5*time.Second, "host gone", func() bool { return gone(t, n, a) })
-	eventually(t, 5*time.Second, "rows dropped", func() bool { return historyRows(t, s.HistoryDB, "alpha") == 0 })
+	eventually(t, 5*time.Second, "rows dropped", func() bool { return historyRows(t, s.Database, "alpha") == 0 })
 	if v, _ := metricValue(metricsText(t, n.base), "gossiper_history_updates"); v != "0" {
 		t.Errorf("history_updates after delete: %s", v)
 	}
@@ -126,16 +124,16 @@ func TestDeleteThenRecreateAfterApply(t *testing.T) {
 }
 
 // A node down while a tenant is deleted and created again (same spec) never sees the tombstone, only the new record:
-// its creation time tells the node the tenant is new, so it drops the stored history of the former one, and the node
-// that did the delete ignores the former tenant's updates the returning node sends it (stamped before the creation).
+// its creation time tells the node the tenant is new, so it drops the history of the former one it wrote to its
+// database, and the node that did the delete ignores the former tenant's updates the returning node sends it (stamped
+// before the creation).
 func TestOfflinePeerDropsDeletedTenantHistory(t *testing.T) {
 	binds := []string{freePort(t, "both"), freePort(t, "both")}
 	var sets []Settings
 	for i := range 2 {
 		s := adminSettings(t, "")
-		s.NodeID = uuid.NewString()
 		s.Database = filepath.Join(t.TempDir(), fmt.Sprintf("node%d.db", i))
-		s.HistoryDB = filepath.Join(t.TempDir(), fmt.Sprintf("hist%d.db", i))
+		s.HistoryPersist, s.HistoryFlush = true, "20ms"
 		s.ClusterBind = binds[i]
 		s.ClusterKey = testClusterKey
 		s.ClusterPeers = []string{binds[1-i]}
@@ -149,14 +147,14 @@ func TestOfflinePeerDropsDeletedTenantHistory(t *testing.T) {
 	api(t, n0.base, "POST", "/api/tenants", a.spec(t), 201)
 	eventually(t, 10*time.Second, "both serve alpha", func() bool { return serves(t, n0, a) && serves(t, n1, a) })
 	mustPost(t, n0.base, a.host, a.token(t, []string{"*"}, nil), url.Values{"topic": {sharedTopic}, "data": {"deleted-tenant-data"}})
-	eventually(t, 10*time.Second, "node 1 stored it", func() bool { return historyRows(t, sets[1].HistoryDB, "alpha") == 1 })
+	eventually(t, 10*time.Second, "node 1 wrote it", func() bool { return historyRows(t, sets[1].Database, "alpha") == 1 })
 
 	if err := n1.stop(); err != nil {
 		t.Fatal(err)
 	}
 	api(t, n0.base, "DELETE", "/api/tenants/alpha", nil, 204)
 	eventually(t, 5*time.Second, "gone on node 0", func() bool { return gone(t, n0, a) })
-	eventually(t, 5*time.Second, "node 0 dropped its rows", func() bool { return historyRows(t, sets[0].HistoryDB, "alpha") == 0 })
+	eventually(t, 5*time.Second, "node 0 dropped its rows", func() bool { return historyRows(t, sets[0].Database, "alpha") == 0 })
 	api(t, n0.base, "POST", "/api/tenants", a.spec(t), 201)
 	eventually(t, 5*time.Second, "re-created on node 0", func() bool { return serves(t, n0, a) })
 	if got := replay(t, n0.base, a); len(got) != 0 {
@@ -251,20 +249,20 @@ func TestDeletedTenantSecretLeavesDisk(t *testing.T) {
 	}
 }
 
-// Delete on a cluster with both nodes up: the peer closes its streams and drops its stored history too.
+// Delete on a cluster with both nodes up: the peer closes its streams and drops its history too, in memory and in its
+// database.
 func TestClusterDeleteDropsPeerState(t *testing.T) {
 	binds := []string{freePort(t, "both"), freePort(t, "both")}
 	var nodes []*node
-	var hist []string
+	var dbs []string
 	for i := range 2 {
 		s := adminSettings(t, "")
-		s.NodeID = uuid.NewString()
 		s.Database = filepath.Join(t.TempDir(), fmt.Sprintf("node%d.db", i))
-		s.HistoryDB = filepath.Join(t.TempDir(), fmt.Sprintf("hist%d.db", i))
+		s.HistoryPersist, s.HistoryFlush = true, "20ms"
 		s.ClusterBind = binds[i]
 		s.ClusterKey = testClusterKey
 		s.ClusterPeers = []string{binds[1-i]}
-		hist = append(hist, s.HistoryDB)
+		dbs = append(dbs, s.Database)
 		nodes = append(nodes, startNode(t, s))
 	}
 	eventually(t, 15*time.Second, "the nodes to meet", func() bool {
@@ -275,8 +273,8 @@ func TestClusterDeleteDropsPeerState(t *testing.T) {
 	eventually(t, 10*time.Second, "both serve alpha", func() bool { return serves(t, nodes[0], a) && serves(t, nodes[1], a) })
 	st := openStream(t, nodes[1].base, a.host, a.token(t, nil, []string{"*"}), url.Values{"topic": {sharedTopic}}, "")
 	mustPost(t, nodes[0].base, a.host, a.token(t, []string{"*"}, nil), url.Values{"topic": {sharedTopic}, "data": {"x"}})
-	eventually(t, 10*time.Second, "stored on both", func() bool {
-		return historyRows(t, hist[0], "alpha") == 1 && historyRows(t, hist[1], "alpha") == 1
+	eventually(t, 10*time.Second, "held on both", func() bool {
+		return slices.Contains(replay(t, nodes[0].base, a), "x") && slices.Contains(replay(t, nodes[1].base, a), "x")
 	})
 	api(t, nodes[0].base, "DELETE", "/api/tenants/alpha", nil, 204)
 	select {
@@ -284,9 +282,19 @@ func TestClusterDeleteDropsPeerState(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the peer's stream did not end")
 	}
+	eventually(t, 10*time.Second, "gone on both", func() bool { return gone(t, nodes[0], a) && gone(t, nodes[1], a) })
 	eventually(t, 10*time.Second, "rows dropped on both", func() bool {
-		return historyRows(t, hist[0], "alpha") == 0 && historyRows(t, hist[1], "alpha") == 0
+		return historyRows(t, dbs[0], "alpha") == 0 && historyRows(t, dbs[1], "alpha") == 0
 	})
+	api(t, nodes[0].base, "POST", "/api/tenants", a.spec(t), 201)
+	eventually(t, 10*time.Second, "re-created on both", func() bool { return serves(t, nodes[0], a) && serves(t, nodes[1], a) })
+	for _, nd := range nodes {
+		if got := replay(t, nd.base, a); len(got) != 0 {
+			t.Errorf("%s replays %q to the re-created tenant", nd.base, got)
+		}
+	}
+	api(t, nodes[0].base, "DELETE", "/api/tenants/alpha", nil, 204)
+	eventually(t, 10*time.Second, "gone again on both", func() bool { return gone(t, nodes[0], a) && gone(t, nodes[1], a) })
 	for _, nd := range nodes {
 		if l := api(t, nd.base, "GET", "/api/tenants", nil, 200)["tenants"].([]any); len(l) != 0 {
 			t.Errorf("%s still lists %v", nd.base, l)

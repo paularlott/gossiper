@@ -55,7 +55,8 @@ The TOML file is `-c`/`--config` (`GOSSIPER_CONFIG`), or else `gossiper.toml` in
 | --- | --- | --- |
 | `--history-size`, `--history-bytes`, `--history-age` | `10000`, 64 MiB, `1h` | replay history per hub (`--history-age 0`: no age bound) |
 | `--history-budget` | 1 GiB | the tenants' histories together |
-| `--history-db` | | SQLite file to keep the history in across restarts |
+| `--history-persist` | off | also write the history to `--database`, in the background, so a node has it back after a restart (a single node, or a cluster that stopped all at once) |
+| `--history-flush` | `1s` | how often the history is written, with `--history-persist` |
 | `--replay-window` | `5s` | how late an update may arrive and still be replayed |
 
 ## Clustering
@@ -67,14 +68,14 @@ The TOML file is `-c`/`--config` (`GOSSIPER_CONFIG`), or else `gossiper.toml` in
 | `--cluster-peers` | | peers to join (`host:port`, a host name, or `srv+name`) |
 | `--cluster-key` | | gossip encryption key, the same on every node (`gossiper genkey`) |
 | `--cluster-insecure` | off | cluster without a key: unencrypted and unauthenticated (trusted networks only) |
-| `--node-id` | random | this node's ID, a UUID; keep it across restarts |
 
 ## Tenants and the admin API
 
 | Flag | Default | |
 | --- | --- | --- |
 | `--tenants-file` | | tenants, from a JSON file ([multi-tenancy](multi-tenancy.md)) |
-| `--database`, `--api-token` | | the admin API's database (SQLite) and its static token (plain or a bcrypt hash) |
+| `--database` | | the SQLite file of the tenants the admin API manages, the node's ID and, with `--history-persist`, the history; without it they are kept in memory |
+| `--api-token` | | the admin API's static token (plain or a bcrypt hash) |
 | `--admin-issuer`, `--admin-audience` | | an identity provider whose access tokens the admin API takes; the API's identifier (the tokens' `aud`) |
 | `--admin-detail-type`, `--admin-scope` | `urn:gossiper:admin`, none | what an IdP token may do: its authorization details of this type, or this scope for full access |
 

@@ -73,15 +73,13 @@ func (h *Hub) authenticate(w http.ResponseWriter, r *http.Request, as role) (*gr
 		return nil, noToken, true
 	}
 	g, err := h.verify(r, tok, as)
-	switch {
-	case err == nil:
+	if err == nil {
 		return g, src, true
-	case errors.Is(err, auth.ErrMalformed):
-		h.writeAuthError(w, r, http.StatusBadRequest, "invalid_request")
-	default:
-		h.log.Debug("token refused", "error", err.Error())
-		h.writeAuthError(w, r, http.StatusUnauthorized, "invalid_token")
 	}
+	// A token that cannot be decoded is invalid like any other (RFC 6750: "expired, revoked, malformed, or
+	// invalid"): 401 invalid_token. 400 invalid_request is for a malformed request, as above.
+	h.log.Debug("token refused", "error", err.Error())
+	h.writeAuthError(w, r, http.StatusUnauthorized, "invalid_token")
 	return nil, src, false
 }
 
@@ -124,7 +122,7 @@ func (h *Hub) verifyToken(r *http.Request, tok string, as role, access bool, aud
 	if as == rolePublisher {
 		v = h.pub
 	}
-	if v == nil { // no draft-07 verifier: still tell a token that is not a JWT at all (400) from one refused (401)
+	if v == nil { // no draft-07 verifier: still tell a token that is not a JWT at all from one refused, for the log
 		if _, _, err := jwt.NewParser().ParseUnverified(tok, jwt.MapClaims{}); err != nil {
 			return nil, auth.ErrMalformed
 		}

@@ -104,18 +104,15 @@ type Transport struct {
 	backfillDone chan struct{} // closed when the backfill is over
 }
 
-// batch is updates sent together, in the order they were published, each encoded (msgpack) once for every peer. S
-// asks the peer to acknowledge it once stored: it holds an update that asked for copies.
+// batch is updates sent together, in the order they were published, each encoded (msgpack) once for every peer.
 type batch struct {
 	U [][]byte `msgpack:"u"`
-	S bool     `msgpack:"s,omitempty"`
 }
 
 // ack acknowledges a batch: the peer has applied it, but for Bad updates it could not decode (-1: the batch), which
-// the sender drops rather than send again. Unstored says that a batch asked to be stored was not.
+// the sender drops rather than send again.
 type ack struct {
-	Bad      int  `msgpack:"b,omitempty"`
-	Unstored bool `msgpack:"n,omitempty"`
+	Bad int `msgpack:"b,omitempty"`
 }
 
 // historyReq asks a peer for the updates of its history after the one stamped S by O, none if R and the peer is not
@@ -134,10 +131,9 @@ type historyResp struct {
 
 // applyJob is a peer's batch, decoded, waiting to be applied and acknowledged (once stored, with store).
 type applyJob struct {
-	us    []*gossiper.Update
-	store bool
-	a     ack
-	r     gossip.Replier
+	us []*gossiper.Update
+	a  ack
+	r  gossip.Replier
 }
 
 // applyQueue bounds the batches of one peer waiting to be applied: it sends one at a time, so more are batches sent
@@ -570,10 +566,10 @@ func (l *link) drop(b []item) {
 	l.t.dropped.Add(uint64(n))
 }
 
-// acked takes the peer's acknowledgement of b: it counts a copy of each update in it that asked for copies (unless
-// the peer could not store what it was asked to), and the updates it could not decode.
+// acked takes the peer's acknowledgement of b: it counts a copy of each update in it that asked for copies, and the
+// updates it could not decode.
 func (l *link) acked(b []item, a ack) {
-	if a.Bad >= 0 && !a.Unstored {
+	if a.Bad >= 0 {
 		for _, it := range b {
 			if it.c != nil {
 				it.c.ack()
@@ -604,7 +600,6 @@ func batchOf(b []item) *batch {
 	msg := &batch{U: make([][]byte, len(b))}
 	for i, it := range b {
 		msg.U[i] = it.raw
-		msg.S = msg.S || it.c != nil
 	}
 	return msg
 }
@@ -630,7 +625,7 @@ func (t *Transport) handlePublish(n *gossip.Node, p *gossip.Packet, r gossip.Rep
 		r.Reply(&ack{}, nil)
 		return
 	}
-	j := applyJob{r: r, store: b.S}
+	j := applyJob{r: r}
 	for _, raw := range b.U {
 		u := new(gossiper.Update) // a copy of its own, for the hub to keep
 		if msgpack.Unmarshal(raw, u) != nil {
@@ -664,9 +659,6 @@ func (t *Transport) apply(jobs <-chan applyJob) {
 		if !t.closed.Load() {
 			for _, u := range j.us {
 				t.hub.Apply(u)
-			}
-			if j.store && t.hub.Stored(t.done) != nil {
-				j.a.Unstored = true
 			}
 		}
 		j.r.Reply(&j.a, nil)

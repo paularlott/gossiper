@@ -25,7 +25,8 @@ import (
 var (
 	// ErrMalformed is returned (wrapped) for tokens that are not a parseable
 	// compact JWS: wrong number of segments, bad base64 or bad JSON, or a token
-	// that is too long. The hub answers 400.
+	// that is too long. The hub answers 401 invalid_token, as for ErrInvalid
+	// (RFC 6750 counts a malformed token as invalid).
 	ErrMalformed = errors.New("auth: malformed token")
 
 	// ErrInvalid is returned (wrapped) for tokens that parse but are rejected:

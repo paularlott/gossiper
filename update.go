@@ -43,8 +43,6 @@ type Update struct {
 	Idempotent bool `msgpack:"e,omitempty"`
 
 	encoded  []byte                          // the SSE frame, built once by the hub when it applies the update
-	ticket   uint64                          // the HistoryStore's, when the hub saved it
-	unstored bool                            // the HistoryStore did not take it
 	copied   func(ctx context.Context) error // waits for its copies, when it asked for some
 	copiesBy time.Time                       // when copied gives up
 }

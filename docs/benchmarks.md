@@ -1,7 +1,9 @@
 # Benchmarks
 
 Measured with [test/bench](../test/bench) on one machine (Apple M5 Max, 18 cores, macOS), clients and servers
-together. There are two suites:
+together, with Gossiper 0.2. The columns marked `--history-db` used 0.2's history file, written before each publish
+was answered, on single nodes and in clusters; 0.3 replaced it with `--history-persist`, which writes in the background.
+There are two suites:
 
 - **mercure**: what browsers do. Each publish is an HTTP POST (or the [Go client](../client)'s streaming publish),
   and each subscriber is a Server-Sent Events stream that behaves like a browser's `EventSource`.
@@ -43,7 +45,7 @@ on the same Docker network. Each workload ran twice, with the hubs interleaved, 
 | `dunglas/mercure` 1.1.5, as shipped | its default configuration plus `anonymous`: its transport writes every update to a file before the publish returns |
 | `dunglas/mercure`, in memory | `transport local`: nothing on disk |
 | Gossiper | `serve --anonymous --http-only --max-subscribers-per-ip 0` |
-| Gossiper, `--history-db` | the same, with the history in SQLite on a Docker volume: the one to compare with the official hub's file |
+| Gossiper, `--history-db` | the same, with the history in SQLite on a Docker volume: the one to compare with the official hub's file. Measured with 0.2's `--history-db`, which answered each publish once it was on disk; `--history-persist` writes in the background instead, so these figures are a lower bound |
 
 Inside Docker the network costs more than on the host, so these figures are lower than the native ones below.
 

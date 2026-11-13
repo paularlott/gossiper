@@ -127,8 +127,8 @@ func TestPublishWithoutGrantsDispatchesNothing(t *testing.T) {
 	})
 }
 
-// TestPublishTokenValidation: a token that does not validate is refused with invalid_token, a malformed one with
-// invalid_request.
+// TestPublishTokenValidation: a token that does not validate is refused with 401 invalid_token, a malformed one
+// too (RFC 6750).
 func TestPublishTokenValidation(t *testing.T) {
 	good := []any{mDetail(pubOnly, mBare("*"))}
 	forProtocols(t, func(t *testing.T, p Protocol) {
@@ -208,9 +208,9 @@ func TestPublishTokenValidation(t *testing.T) {
 				c["authorization_details"] = []any{mDetail([]string{"publish"}, mBare("*")), map[string]any{
 					"type": auth.DetailType, "actions": []any{"publish", 7}, "topics": []any{mBare("*")}}}
 			}), 401, "invalid_token"},
-			// Malformed: the presentation or the token is not a JWS.
-			{"payload is not base64", seg(`{"alg":"HS256","typ":"at+jwt"}`) + ".!!!." + seg("sig"), 400, "invalid_request"},
-			{"payload is not JSON", seg(`{"alg":"HS256","typ":"at+jwt"}`) + "." + seg("not json") + "." + seg("sig"), 400, "invalid_request"},
+			// Malformed: the token is not a JWS.
+			{"payload is not base64", seg(`{"alg":"HS256","typ":"at+jwt"}`) + ".!!!." + seg("sig"), 401, "invalid_token"},
+			{"payload is not JSON", seg(`{"alg":"HS256","typ":"at+jwt"}`) + "." + seg("not json") + "." + seg("sig"), 401, "invalid_token"},
 		}
 		for _, tc := range tests {
 			t.Run(tc.name, func(t *testing.T) {
@@ -245,7 +245,7 @@ func TestPublishTokenValidation(t *testing.T) {
 			{"too many details", signAccess(t, accessClaims(aud, time.Hour, manyDetails...)), 401},
 			{"too many topics in a detail", signAccess(t, accessClaims(aud, time.Hour, mDetail(pubOnly, manyTopics...))), 401},
 			{"matcher over the length limit", signAccess(t, accessClaims(aud, time.Hour, mDetail(pubOnly, mExact(strings.Repeat("a", auth.DefaultMaxPatternLength+1))))), 401},
-			{"token over the size limit", mod(func(c jwt.MapClaims) { c["jti"] = strings.Repeat("j", auth.MaxTokenSize) }), 400},
+			{"token over the size limit", mod(func(c jwt.MapClaims) { c["jti"] = strings.Repeat("j", auth.MaxTokenSize) }), 401},
 			// RFC 9068 asks issuers for these claims; the hub enforces iss, exp and aud and uses the rest when it relies on them.
 			{"no sub, client_id, jti or iat", mod(func(c jwt.MapClaims) {
 				delete(c, "sub")
@@ -274,7 +274,7 @@ func TestPublishTokenValidation(t *testing.T) {
 	})
 }
 
-// TestPublishMalformedToken: a token that is not a JWT is a malformed presentation: 400 invalid_request, on any
+// TestPublishMalformedToken: a token that is not a JWT is an invalid token: 401 invalid_token (RFC 6750), on any
 // hub that takes Mercure 1.0 tokens.
 func TestPublishMalformedToken(t *testing.T) {
 	forProtocols(t, func(t *testing.T, p Protocol) {
@@ -282,10 +282,10 @@ func TestPublishMalformedToken(t *testing.T) {
 		for _, tok := range []string{"not-a-jwt", "a.b.c", "x.y"} {
 			t.Run(tok, func(t *testing.T) {
 				r := e.post(t, tok, form("topic", "t"))
-				if r.code != 400 {
-					t.Fatalf("a token that is not a JWT (%q): %d, want 400 invalid_request", tok, r.code)
+				if r.code != 401 {
+					t.Fatalf("a token that is not a JWT (%q): %d, want 401 invalid_token", tok, r.code)
 				}
-				wantChallenge(t, r.header, "invalid_request", e.metadataURL())
+				wantChallenge(t, r.header, "invalid_token", e.metadataURL())
 			})
 		}
 	})
@@ -491,7 +491,7 @@ func TestChallengeResourceMetadata(t *testing.T) {
 		r = e.post(t, signJWT(t, "another-secret-another-secret-12345", mercureClaims(all, nil)), form("topic", "t"))
 		wantChallenge(t, r.header, "invalid_token", "")
 		r = e.post(t, "garbage", form("topic", "t"))
-		wantChallenge(t, r.header, "invalid_request", "")
+		wantChallenge(t, r.header, "invalid_token", "")
 	})
 	t.Run("both, draft-07 token", func(t *testing.T) {
 		e := newEnv(t, mcfg(ProtocolBoth))

@@ -97,7 +97,7 @@ func (h *Hub) servePublish(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := h.publish(r.Context(), u)
 	if err == nil {
-		err = h.settled(r.Context(), u)
+		err = h.replicated(r.Context(), u)
 	}
 	if err != nil {
 		status, msg := h.publishFailed(err)
@@ -190,32 +190,29 @@ func (h *Hub) servePublishStream(w http.ResponseWriter, r *http.Request, g *gran
 	}()
 	in := bufio.NewReaderSize(r.Body, 64<<10)
 	var out []streamAck
-	var last *Update               // the last update of out the store writes: the store writes in order
 	var waits []awaited            // the updates of out that asked for copies
-	stopped := make(chan struct{}) // the stream stops: the client is gone, or the store failed
+	stopped := make(chan struct{}) // the stream stops: the client is gone
 	aw := &answerWriter{h: h, ctx: r.Context(), w: w, rc: rc, stop: sync.OnceFunc(func() { close(stopped); abort() })}
-	// With a HistoryStore, or a transport that makes copies, the answers go out from a goroutine of their own, each
-	// batch once the updates it acknowledges are stored and copied, so that the stream is read on meanwhile; without,
-	// at once.
+	// With a transport that makes copies, the answers go out from a goroutine of their own, each batch once the
+	// updates it acknowledges have their copies, so that the stream is read on meanwhile; without, at once.
 	var queue chan streamAnswers
 	written := make(chan struct{})
-	if _, copies := h.transport.(Replicator); h.store != nil || copies {
+	if _, copies := h.transport.(Replicator); copies {
 		queue = make(chan streamAnswers, 64)
 		go func() {
 			defer close(written)
 			for a := range queue {
 				aw.write(a, len(queue) == 0)
 			}
-			aw.finish()
 		}()
 	}
 	send := func() {
 		if queue != nil {
-			queue <- streamAnswers{out, last, waits}
-			out, last, waits = nil, nil, nil
+			queue <- streamAnswers{out, waits}
+			out, waits = nil, nil
 		} else {
-			aw.write(streamAnswers{out, last, waits}, true)
-			out, last, waits = out[:0], nil, waits[:0]
+			aw.write(streamAnswers{out, waits}, true)
+			out, waits = out[:0], waits[:0]
 		}
 	}
 	end := func(a *streamAck) {
@@ -226,7 +223,6 @@ func (h *Hub) servePublishStream(w http.ResponseWriter, r *http.Request, g *gran
 			send()
 		}
 		if queue == nil {
-			aw.finish()
 			return
 		}
 		close(queue)
@@ -289,13 +285,8 @@ func (h *Hub) servePublishStream(w http.ResponseWriter, r *http.Request, g *gran
 		case err != nil:
 			status, msg := h.publishFailed(err)
 			out = append(out, streamAck{Line: line, Status: status, Error: msg})
-		case u.unstored:
-			out = append(out, notStored(id))
 		default:
 			out = append(out, streamAck{ID: id})
-			if u.ticket != 0 {
-				last = u
-			}
 			if u.copied != nil {
 				waits = append(waits, awaited{len(out) - 1, u})
 			}
@@ -303,16 +294,9 @@ func (h *Hub) servePublishStream(w http.ResponseWriter, r *http.Request, g *gran
 	}
 }
 
-// notStored is the answer for an update published but not stored.
-func notStored(id string) streamAck {
-	return streamAck{ID: id, Status: http.StatusServiceUnavailable, Error: upperFirst(ErrNotStored.Error())}
-}
-
-// streamAnswers is a batch of a stream's answers, the last update they acknowledge that the store writes, and those
-// that asked for copies.
+// streamAnswers is a batch of a stream's answers, and the updates among them that asked for copies.
 type streamAnswers struct {
 	acks  []streamAck
-	last  *Update
 	waits []awaited
 }
 
@@ -322,28 +306,21 @@ type awaited struct {
 	u *Update
 }
 
-// answerWriter writes a stream's answers, each batch once its updates are stored. It calls stop (once) when the
-// stream should stop: the client is gone, or the store failed. From a store failure on, what was published is
-// answered as not stored, and finish writes a last line that ends the stream.
+// answerWriter writes a stream's answers, each batch once its updates have their copies. It calls stop (once) when
+// the client is gone.
 type answerWriter struct {
-	h        *Hub
-	ctx      context.Context
-	w        http.ResponseWriter
-	rc       *http.ResponseController
-	stop     func()
-	buf      []byte
-	storeErr error
-	gone     bool
+	h    *Hub
+	ctx  context.Context
+	w    http.ResponseWriter
+	rc   *http.ResponseController
+	stop func()
+	buf  []byte
+	gone bool
 }
 
 func (aw *answerWriter) write(a streamAnswers, flush bool) {
 	if aw.gone {
 		return // the stream stops; what it queued meanwhile is dropped
-	}
-	if aw.storeErr == nil && a.last != nil {
-		if aw.storeErr = aw.h.persisted(aw.ctx, a.last); aw.storeErr != nil {
-			aw.stop()
-		}
 	}
 	for _, wt := range a.waits {
 		if err := aw.h.replicated(aw.ctx, wt.u); err != nil {
@@ -353,20 +330,9 @@ func (aw *answerWriter) write(a streamAnswers, flush bool) {
 	}
 	aw.buf = aw.buf[:0]
 	for _, ack := range a.acks {
-		if aw.storeErr != nil && ack.ID != "" && ack.Status == 0 {
-			ack = notStored(ack.ID)
-		}
 		aw.buf = append(append(aw.buf, jsonMarshal(ack)...), '\n')
 	}
 	aw.send(aw.buf, flush)
-}
-
-// finish writes the line that ends the stream after a store failure.
-func (aw *answerWriter) finish() {
-	if aw.storeErr != nil && !aw.gone {
-		status, msg := aw.h.publishFailed(aw.storeErr)
-		aw.send(append(jsonMarshal(streamAck{Status: status, Error: msg}), '\n'), true)
-	}
 }
 
 func (aw *answerWriter) send(b []byte, flush bool) {
@@ -442,7 +408,7 @@ func (h *Hub) publishFailed(err error) (int, string) {
 	switch {
 	case errors.Is(err, ErrUpdateTooLarge): // transports wrap it
 		return http.StatusRequestEntityTooLarge, http.StatusText(http.StatusRequestEntityTooLarge)
-	case errors.Is(err, ErrStoreUnavailable), errors.Is(err, ErrNotStored), errors.Is(err, ErrNotReplicated):
+	case errors.Is(err, ErrNotReplicated):
 		h.log.Warn("publish failed", "error", err.Error())
 		return http.StatusServiceUnavailable, upperFirst(err.Error())
 	case errors.Is(err, ErrTooFewNodes): // the client asked for more copies than there are nodes

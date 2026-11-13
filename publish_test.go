@@ -41,7 +41,7 @@ func TestPublishAuth(t *testing.T) {
 		wantAuth string // WWW-Authenticate
 	}{
 		{"no token", nil, "", good, 401, "Bearer"},
-		{"malformed token", http.Header{"Authorization": {"Bearer not-a-jwt"}}, "", good, 400, `Bearer error="invalid_request"`},
+		{"malformed token", http.Header{"Authorization": {"Bearer not-a-jwt"}}, "", good, 401, `Bearer error="invalid_token"`},
 		{"not a bearer header", http.Header{"Authorization": {"Basic dXNlcjpwYXNz"}}, "", good, 400, `Bearer error="invalid_request"`},
 		{"bearer without token", http.Header{"Authorization": {"Bearer"}}, "", good, 400, `Bearer error="invalid_request"`},
 		{"lowercase bearer", http.Header{"Authorization": {"bearer " + tokenFor(t, all, nil)}}, "", good, 200, ""},
@@ -64,9 +64,9 @@ func TestPublishAuth(t *testing.T) {
 		{"alternate not matched", bearer(tokenFor(t, []string{"https://example.com/{x}"}, nil)), "",
 			form("topic", "https://example.com/a", "topic", "https://elsewhere/b"), 403, `Bearer error="insufficient_scope"`},
 		{"query token", nil, "authorization=" + tokenFor(t, all, nil), good, 200, ""},
-		{"query token bad", nil, "authorization=garbage", good, 400, `Bearer error="invalid_request"`},
+		{"query token bad", nil, "authorization=garbage", good, 401, `Bearer error="invalid_token"`},
 		{"header wins over query", bearer(tokenFor(t, all, nil)), "authorization=garbage", good, 200, ""},
-		{"bad header wins over good query", bearer("garbage"), "authorization=" + tokenFor(t, all, nil), good, 400, `Bearer error="invalid_request"`},
+		{"bad header wins over good query", bearer("garbage"), "authorization=" + tokenFor(t, all, nil), good, 401, `Bearer error="invalid_token"`},
 		{"subscribe-only token", bearer(tokenFor(t, nil, all)), "", good, 403, `Bearer error="insufficient_scope"`},
 	}
 	for _, tc := range tests {

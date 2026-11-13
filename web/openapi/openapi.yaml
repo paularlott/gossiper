@@ -8,7 +8,7 @@ info:
   description: |-
     Add, change and remove tenants while the server runs. A tenant has a Mercure hub of its own, picked by host name, with its own keys, isolated from every other tenant.
 
-    The API is served when the server has a database (`--database`) and an API token (`--api-token`), an identity provider (`--admin-issuer`), or both. Changes are stored in the database of the node that receives them and replicate to every node of the cluster group, each of which applies them at once, without a restart: there is no need to call every node.
+    The API is served when the server has an API token (`--api-token`), an identity provider (`--admin-issuer`), or both. Changes are kept in the database (`--database`) of the node that receives them, or in its memory without one, and replicate to every node of the cluster group, each of which applies them at once, without a restart: there is no need to call every node.
 
     Tenants can also come from the tenants file (`--tenants-file`). The server serves both: those of the file are read-only here (source `file`) and a tenant of the database cannot take the name of one. A change that would leave the tenants inconsistent (a host or key given to two tenants) is refused with 409 and changes nothing.
 

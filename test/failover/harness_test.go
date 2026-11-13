@@ -320,7 +320,7 @@ func newCluster(t *testing.T, o clusterOpts) *cluster {
 			"--resource-identifier", "https://failover.test/.well-known/mercure",
 		}
 		if o.size > 1 {
-			n.args = append(n.args, "--node-id", n.id, "--cluster-bind", peers[i], "--cluster-peers", strings.Join(peers, ","),
+			n.args = append(n.args, "--cluster-bind", peers[i], "--cluster-peers", strings.Join(peers, ","),
 				"--cluster-key", clusterKey)
 		}
 		n.args = append(n.args, o.extra...)

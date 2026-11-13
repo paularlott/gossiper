@@ -22,7 +22,7 @@ import (
 // FrankenPHP built-in hub in its default (Mercure 1.0) mode.
 
 var (
-	knMalformed = kn("classification of an undecodable token: the two hubs split 400 invalid_request / 401 invalid_token differently (garbage and 2-segment tokens vs. bad base64/JSON payloads); both refuse it", "status", "header:WWW-Authenticate")
+	knMalformed = kn("an undecodable token: Gossiper answers 401 invalid_token for every one (RFC 6750); the reference answers 400 invalid_request for garbage and 2-segment tokens; both refuse it", "status", "header:WWW-Authenticate")
 	knSlash     = kn("Gossiper normalizes a trailing slash in the Origin header before checking publish_origins; the reference rejects it (browsers never send it)", "status", "header:WWW-Authenticate", "header:Access-Control-Allow-Origin", "header:Access-Control-Allow-Credentials")
 	knLimit     = kn("Gossiper answers 413 for a field over its size limit (id 1 KiB, type 256 B, topic 4 KiB); the reference answers 400 for ids/topics and accepts any type length", "status")
 	knAllow     = kn("Gossiper adds an Allow header (get, head, options, post, query) to its 405", "header:Allow")

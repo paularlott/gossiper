@@ -562,15 +562,15 @@ func tenantSettingsFrom(s Settings, file string) Settings {
 
 // ---- history database -----------------------------------------------------------------------------------------
 
-// TestTenantsHistoryDBRestart: a node with a history database that restarts replays each tenant's history to that
-// tenant only.
-func TestTenantsHistoryDBRestart(t *testing.T) {
+// TestTenantsHistoryPersistRestart: a node that writes its history to its database replays each tenant's history to
+// that tenant only after a restart.
+func TestTenantsHistoryPersistRestart(t *testing.T) {
 	tenants := []tn{newTN(t, "umbra", true, false), newTN(t, "acme", false, false), newTN(t, "globex", true, false),
 		newTN(t, "initech", false, false)}
 	file := fileWithout(t, "", tenants)
 	s := tenantSettings(t, file)
-	s.NodeID = "5b2f1a64-37c2-4c3c-8d2e-0e4f4f3e5a11"
-	s.HistoryDB = filepath.Join(t.TempDir(), "history.db")
+	s.Database = filepath.Join(t.TempDir(), "gossiper.db")
+	s.HistoryPersist = true
 	waitReady := func(n *node) {
 		eventually(t, 15*time.Second, "readyz", func() bool { code, _ := get(t, n.base+"/readyz"); return code == 200 })
 	}

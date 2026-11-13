@@ -46,8 +46,7 @@ type Hub struct {
 	clock      *hlc.Clock
 	hist       *history
 	tokens     tokenCache
-	idem       idempotency   // the IDs of the idempotent updates applied lately
-	lastTicket atomic.Uint64 // the latest the store gave
+	idem       idempotency // the IDs of the idempotent updates applied lately
 	// fanned counts the events queued for subscribers; loaded says that the last loadInterval queued more than
 	// loadEvents: streams whose writes carry few events then wait loadedLinger before each write (see linger).
 	fanned    atomic.Uint64
@@ -362,7 +361,7 @@ func (h *Hub) Publish(ctx context.Context, u *Update) (string, error) {
 	}
 	id, err := h.publish(ctx, c)
 	if err == nil {
-		err = h.settled(ctx, c)
+		err = h.replicated(ctx, c)
 	}
 	return id, err
 }
@@ -378,12 +377,8 @@ func (h *Hub) enterPublish() bool {
 	return true
 }
 
-// publish stamps a validated update and hands it to the transport. With a HistoryStore that cannot keep up it
-// refuses it (ErrStoreUnavailable) after storeWait; the caller waits for the store with persisted.
+// publish stamps a validated update and hands it to the transport.
 func (h *Hub) publish(ctx context.Context, u *Update) (string, error) {
-	if h.store != nil && !h.storeReady(ctx) {
-		return "", ErrStoreUnavailable
-	}
 	ts := h.clock.Now()
 	u.Stamp = uint64(ts)
 	u.Origin = h.nodeID

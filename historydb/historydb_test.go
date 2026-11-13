@@ -22,9 +22,12 @@ import (
 	"github.com/paularlott/gossiper/client"
 )
 
+// testFlush is the tests' flush interval: short, so they do not wait.
+const testFlush = 20 * time.Millisecond
+
 func open(t *testing.T, path string) *Store {
 	t.Helper()
-	s, err := Open(path, nil)
+	s, err := Open(path, testFlush, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,9 +44,9 @@ func loaded(t *testing.T, s *Store, tenant string) []string {
 	return ids
 }
 
-// Updates saved concurrently are written in batches; each waiter returns once its own is on disk, and a reopened
-// store loads them in stamp order, each tenant its own.
-func TestSaveWaitLoad(t *testing.T) {
+// Updates saved concurrently are all written by Close, and a reopened store loads them in stamp order, each tenant
+// its own.
+func TestSaveLoad(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "h.db")
 	s := open(t, path)
 	clock := hlc.NewClock()
@@ -56,12 +59,8 @@ func TestSaveWaitLoad(t *testing.T) {
 				mu.Lock() // stamps and saves in the same order, so want is in stamp order
 				u := &gossiper.Update{ID: fmt.Sprint(w, "-", i), Topics: []string{"https://t.test/a"}, Data: "x", Stamp: uint64(clock.Now()), Origin: "n"}
 				want = append(want, u.ID)
-				ticket := s.Save(u)
+				s.Save(u)
 				mu.Unlock()
-				if err := s.Wait(context.Background(), ticket); err != nil {
-					t.Error(err)
-					return
-				}
 			}
 		})
 	}
@@ -79,30 +78,45 @@ func TestSaveWaitLoad(t *testing.T) {
 	}
 }
 
-// Trim deletes what sorts before the bound (with the next commit); Drop deletes what a tenant saved before it, not
-// after.
+// The store writes in the background, every flush interval: a saved update is not on disk at once, then is, with
+// no Close.
+func TestFlushesPeriodically(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "h.db"), 300*time.Millisecond, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	s.Save(&gossiper.Update{ID: "a", Topics: []string{"t"}, Stamp: 1, Origin: "n"})
+	if got := loaded(t, s, ""); len(got) != 0 {
+		t.Fatalf("written at once: %v", got)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for len(loaded(t, s, "")) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("not written within the flush interval")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// Trim deletes what sorts before the bound (with the next write); Drop deletes what a tenant saved before it, not
+// after, and returns once that is done. Nothing is saved after Close.
 func TestTrimDrop(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "h.db")
 	s := open(t, path)
-	var last uint64
 	for i := 1; i <= 5; i++ {
-		last = s.Save(&gossiper.Update{ID: fmt.Sprint(i), Topics: []string{"t"}, Stamp: uint64(i), Origin: "b"})
+		s.Save(&gossiper.Update{ID: fmt.Sprint(i), Topics: []string{"t"}, Stamp: uint64(i), Origin: "b"})
 		s.Save(&gossiper.Update{ID: fmt.Sprint("x", i), Topics: []string{"t"}, Stamp: uint64(i), Origin: "b", Tenant: "x"})
-	}
-	if err := s.Wait(context.Background(), last); err != nil {
-		t.Fatal(err)
 	}
 	s.Trim("", 3, "b")
 	if err := s.Drop(context.Background(), "x"); err != nil {
 		t.Fatal(err)
 	}
+	if got := loaded(t, s, "x"); len(got) != 0 {
+		t.Errorf("Drop returned with %v still stored", got)
+	}
 	// Saved after the drop (the tenant added again at once): kept.
-	if err := s.Wait(context.Background(), s.Save(&gossiper.Update{ID: "x-again", Topics: []string{"t"}, Stamp: 9, Origin: "b", Tenant: "x"})); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Ready(context.Background()); err != nil {
-		t.Errorf("an idle store is not ready: %v", err)
-	}
+	s.Save(&gossiper.Update{ID: "x-again", Topics: []string{"t"}, Stamp: 9, Origin: "b", Tenant: "x"})
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -113,15 +127,14 @@ func TestTrimDrop(t *testing.T) {
 	if got := loaded(t, s2, "x"); fmt.Sprint(got) != "[x-again]" {
 		t.Errorf("after the drop: %v, want only what was saved after it", got)
 	}
-	if s2.Save(&gossiper.Update{ID: "late", Topics: []string{"t"}}) == 0 {
-		t.Error("a save was refused")
-	}
+	s2.Save(&gossiper.Update{ID: "late", Topics: []string{"t"}, Stamp: 10, Origin: "b"})
 	s2.Close()
-	if s2.Save(&gossiper.Update{ID: "closed", Topics: []string{"t"}}) != 0 {
-		t.Error("a save after Close got a ticket")
+	s2.Save(&gossiper.Update{ID: "closed", Topics: []string{"t"}, Stamp: 11, Origin: "b"})
+	if got := loaded(t, open(t, path), ""); fmt.Sprint(got) != "[3 4 5 late]" {
+		t.Errorf("after Close: %v, want the save before it and not the one after", got)
 	}
-	if s2.Ready(context.Background()) == nil {
-		t.Error("a closed store is ready")
+	if err := s2.Drop(context.Background(), "x"); err != ErrClosed {
+		t.Errorf("Drop after Close: %v, want ErrClosed", err)
 	}
 }
 
@@ -197,7 +210,7 @@ func TestHubRestart(t *testing.T) {
 	}
 }
 
-// A streaming publish answers each update once it is stored: every update answered is there after a restart.
+// Every update a stream published is stored once the hub and the store close cleanly: a restart has them all.
 func TestStreamStored(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "h.db")
 	s := open(t, path)
@@ -239,7 +252,7 @@ func TestStreamStored(t *testing.T) {
 
 func TestSchemaVersion(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "h.db")
-	s, err := Open(path, nil)
+	s, err := Open(path, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +269,7 @@ func TestSchemaVersion(t *testing.T) {
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if s, err := Open(path, nil); err == nil {
+	if s, err := Open(path, 0, nil); err == nil {
 		s.Close()
 		t.Fatal("a file of a later schema was opened")
 	}

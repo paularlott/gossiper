@@ -10,7 +10,7 @@ gossiper serve --cluster-bind 0.0.0.0:7946 --cluster-peers node1:7946,node2:7946
 - **The cluster key** encrypts and authenticates gossip. Without it anyone who reaches the port could join, read every update and the tenants' keys, and inject updates, so clustering refuses to start without one (`--cluster-insecure` allows it on a trusted network).
 - **The cluster port** (7946 by default) needs both TCP and UDP. Behind NAT or in containers, set `--cluster-advertise` to the address peers should use.
 - **Clocks must be synchronised** (NTP, chrony, or the cloud provider's time service). A node refuses an update stamped more than 5 seconds ahead of its own clock; it is lost on that node and counted in `gossiper_refused_total`. It also refuses a tenant change stamped more than a minute ahead (logged, and taken once its clock catches up).
-- **Node IDs:** each node has an ID (`--node-id`, a UUID), random by default. Set one and keep it across restarts.
+- **Node IDs:** each node has an ID, a UUID. A node with a database (`--database`) makes one on its first start and keeps it there, so it comes back as the same node after a restart. Give every node its own database, never a copy of another node's: two nodes with one ID cannot share a cluster. A node without a database has a new ID at each start.
 
 [examples/cluster](../examples/cluster) runs three nodes behind Caddy with Docker Compose.
 
@@ -27,7 +27,7 @@ Order is per node: two services publishing to one topic through two nodes may be
 
 ## Copies and idempotent publishes
 
-A publish can ask for copies, a Gossiper extension: `"replicas": n` on a stream's line, the `Gossiper-Replicas: n` header on a form POST, or `Replicas` in the [Go client](streaming-and-go-client.md#go-client) or `Update`. It is answered once n nodes (at most 64), including the one that took it, hold the update, and have stored it on nodes with `--history-db`:
+A publish can ask for copies, a Gossiper extension: `"replicas": n` on a stream's line, the `Gossiper-Replicas: n` header on a form POST, or `Replicas` in the [Go client](streaming-and-go-client.md#go-client) or `Update`. It is answered once n nodes (at most 64), including the one that took it, hold the update:
 
 ```
 → {"topic":["https://example.com/orders/42"],"data":"…","id":"urn:order:42:v3","replicas":2}
@@ -48,10 +48,11 @@ A subscriber that reconnects with `Last-Event-ID` gets what it missed from the n
 - **A starting node** with `--cluster-peers` copies the history of a ready peer before `/readyz` reports it ready, so subscribers can resume there too. It waits up to 10s for one, or 2s when every peer is starting too.
 - **Order:** event IDs are UUIDv7 URNs ordered the same on every node. An update that reaches a node late is still replayed within `--replay-window` (5s), so a resuming subscriber may rarely see a duplicate but misses nothing that arrived in the window.
 
-### On disk
+### Across a restart
 
-`--history-db /data/history.db` keeps the history in a SQLite file as well, so a node (a single one included) has it back after a restart.
+A node that restarts in a running cluster copies the history from a peer. `--history-persist` also writes each node's history to its database (`--database`), so a node has it back with no peer to copy from: a single node, or a cluster whose nodes all stopped at once.
 
-- A publish returns once its update is on disk. Writes are batched, so a busy node pays for one sync per batch, not per update.
-- The file stays about the size of the in-memory history. Updates older than `--history-age` are not brought back.
-- **A disk that cannot keep up** (its write queue half full, or writes failing): publishes wait up to 5 seconds for it, then are refused with 503 rather than publish updates it cannot store. Updates from other nodes are still applied; those the file cannot take are counted in `gossiper_history_unwritten_total`. A publish delivered but not written within 10s is answered 503 `Published, not stored`.
+- **In the background:** the history is written every `--history-flush` (1s), in one transaction; no publish waits for the disk. A crash loses at most the last interval (in a cluster the peers still hold it); a clean stop writes everything first.
+- **Every node writes everything:** each node keeps the whole history, so in a cluster each writes every update to its own database.
+- The database holds about what the in-memory history does. Updates older than `--history-age` are not brought back.
+- **A disk that cannot keep up:** what it cannot take is not stored (the history in memory is unaffected) and is counted in `gossiper_history_unwritten_total`.

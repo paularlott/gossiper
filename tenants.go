@@ -509,16 +509,6 @@ func (ts *Tenants) Apply(u *Update) {
 	}
 }
 
-// Stored implements Host: every hub's saves are stored (the hubs may share a store, or not).
-func (ts *Tenants) Stored(ctx context.Context) error {
-	for _, h := range ts.set.Load().hubs {
-		if err := h.Stored(ctx); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // Restore implements Host.
 func (ts *Tenants) Restore(u *Update) {
 	if u == nil {

@@ -1,10 +1,9 @@
 // Package historydb is a gossiper.HistoryStore in a SQLite file: a node's history survives a restart.
 //
-// Writes are batched as a group commit: one goroutine takes the updates saved since its last commit (up to maxBatch),
-// inserts them and applies the deletes the hubs asked for in one transaction, and commits it with one sync. An idle
-// store commits a lone update at once; under load a batch is what was saved while the previous one was syncing. A
-// publisher waits only for the commit that holds its update. A commit that fails is retried until it succeeds or
-// the store closes; meanwhile the store is not healthy (the hubs refuse publishes), and waiting publishers time out.
+// The history is in memory; the store keeps a copy. One goroutine collects the updates saved, and every flush
+// interval writes them, with the deletes the hubs asked for, in one transaction and one sync. No publish waits for
+// it: a crash loses what was saved since the last write, Close writes it all. A write that fails keeps its updates
+// for the next one, up to maxPending.
 package historydb
 
 import (
@@ -25,10 +24,13 @@ import (
 	_ "modernc.org/sqlite" // registers the "sqlite" database/sql driver
 )
 
+// DefaultFlush is how often a store writes what was saved, when Open is given no interval.
+const DefaultFlush = time.Second
+
 const (
-	maxBatch   = 1024                   // updates in one commit
-	queueSize  = 8 * maxBatch           // updates waiting for a commit; Save leaves out what does not fit
-	retryDelay = 100 * time.Millisecond // after a failed commit
+	queueSize  = 8192                   // updates handed to the writer goroutine; Save leaves out what does not fit
+	maxPending = 1 << 16                // updates collected for one write: more are written at once
+	retryDelay = 100 * time.Millisecond // between the attempts of the last write, on Close
 	// vacuumEvery is how often the pages freed by deletes are given back to the file system (at most 8 MiB a time):
 	// the history is a window that moves, so without it the file keeps its largest size.
 	vacuumEvery = 5 * time.Second
@@ -36,7 +38,7 @@ const (
 	dropTimeout = 10 * time.Second
 )
 
-// ErrClosed is returned by Wait once the store is closed with the update not written.
+// ErrClosed is returned by Drop once the store is closed.
 var ErrClosed = errors.New("historydb: store closed")
 
 // Store is a gossiper.HistoryStore in a SQLite file.
@@ -45,14 +47,17 @@ type Store struct {
 	insert *sql.Stmt
 	log    logger.Logger
 
-	mu      sync.Mutex // orders the tickets in the queue; guards next and closed
-	queue   chan item
-	next    uint64
-	closed  bool
-	tmu     sync.Mutex       // guards trims (never held with mu)
-	trims   map[string]bound // tenant -> keep from here
-	stuck   atomic.Uint64    // updates not written: the queue was full
-	failing atomic.Bool      // the last commit failed
+	flush time.Duration
+
+	mu       sync.Mutex // orders the tickets in the queue; guards next and closed
+	queue    chan item
+	next     uint64
+	closed   bool
+	tmu      sync.Mutex       // guards trims (never held with mu)
+	trims    map[string]bound // tenant -> keep from here
+	stuck    atomic.Uint64    // updates not written: the queue was full, or writes kept failing
+	flushNow chan struct{}    // asks for a write at once (Drop)
+	failed   time.Time        // when a failed write was last logged; the run loop's
 
 	vacuumed  time.Time // last incremental vacuum; the run loop's
 	committed atomic.Uint64
@@ -76,10 +81,14 @@ type bound struct {
 
 var _ gossiper.HistoryStore = (*Store)(nil)
 
-// Open opens (creating it if needed) the store in the SQLite file at path. Close it after the hubs that use it.
-func Open(path string, log logger.Logger) (*Store, error) {
+// Open opens (creating it if needed) the store in the SQLite file at path, writing what is saved every flush
+// (DefaultFlush when 0 or less). Close it after the hubs that use it.
+func Open(path string, flush time.Duration, log logger.Logger) (*Store, error) {
 	if log == nil {
 		log = logger.NewNullLogger()
+	}
+	if flush <= 0 {
+		flush = DefaultFlush
 	}
 	// It holds updates, private ones included: readable by this user only, as the tenants' database is.
 	if f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600); err == nil {
@@ -110,8 +119,8 @@ func Open(path string, log logger.Logger) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("historydb: %s: %w", path, err)
 	}
-	s := &Store{db: db, insert: ins, log: log, queue: make(chan item, queueSize), trims: map[string]bound{},
-		stop: make(chan struct{}), done: make(chan struct{})}
+	s := &Store{db: db, insert: ins, log: log, flush: flush, queue: make(chan item, queueSize), trims: map[string]bound{},
+		flushNow: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{})}
 	ch := make(chan struct{})
 	s.notify.Store(&ch)
 	go s.run()
@@ -159,46 +168,19 @@ func (s *Store) Load(tenant string, fn func(*gossiper.Update)) error {
 	return rows.Err()
 }
 
-// Save implements gossiper.HistoryStore. It returns 0 after Close, and when the queue is full.
-func (s *Store) Save(u *gossiper.Update) uint64 {
+// Save implements gossiper.HistoryStore. After Close, and when the writer is far behind, it leaves u out.
+func (s *Store) Save(u *gossiper.Update) {
 	s.mu.Lock() // held while queueing, so tickets reach the queue in order
 	defer s.mu.Unlock()
 	if s.closed {
-		return 0
+		return
 	}
 	select {
 	case s.queue <- item{u: u, ticket: s.next + 1}:
+		s.next++
 	default:
 		if s.stuck.Add(1) == 1 {
 			s.log.Error("historydb: the history cannot be written fast enough; updates are not all stored")
-		}
-		return 0
-	}
-	s.next++
-	return s.next
-}
-
-// Ready implements gossiper.HistoryStore: it returns once the last commit succeeded and the queue is less than half
-// full (the other half is room for the saves of publishers that found it ready at once). It waits for a commit to
-// wake it.
-func (s *Store) Ready(ctx context.Context) error {
-	for {
-		ch := s.notify.Load()
-		s.mu.Lock()
-		closed := s.closed
-		s.mu.Unlock()
-		if closed {
-			return ErrClosed
-		}
-		if !s.failing.Load() && len(s.queue) < cap(s.queue)/2 {
-			return nil
-		}
-		select {
-		case <-*ch:
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-s.done:
-			return ErrClosed
 		}
 	}
 }
@@ -206,8 +188,8 @@ func (s *Store) Ready(ctx context.Context) error {
 // Unwritten returns how many updates were not stored because the store could not keep up.
 func (s *Store) Unwritten() uint64 { return s.stuck.Load() }
 
-// Wait implements gossiper.HistoryStore.
-func (s *Store) Wait(ctx context.Context, ticket uint64) error {
+// wait returns once the ticket's item is written, or with ctx's error.
+func (s *Store) wait(ctx context.Context, ticket uint64) error {
 	for {
 		ch := s.notify.Load()
 		if s.committed.Load() >= ticket {
@@ -256,55 +238,76 @@ func (s *Store) Drop(ctx context.Context, tenant string) error {
 	s.next++
 	ticket := s.next
 	s.mu.Unlock()
-	return s.Wait(ctx, ticket)
+	select { // written now, not at the next flush
+	case s.flushNow <- struct{}{}:
+	default:
+	}
+	return s.wait(ctx, ticket)
 }
 
-// run commits batches until Close, then what is left.
+// run collects what is saved and writes it every flush interval (at once for a Drop, or when maxPending are
+// waiting), until Close; then it writes what is left.
 func (s *Store) run() {
 	defer close(s.done)
-	batch := make([]item, 0, maxBatch)
+	tick := time.NewTicker(s.flush)
+	defer tick.Stop()
+	var pending []item
+	write := func(closing bool) {
+		for len(s.queue) > 0 {
+			pending = append(pending, <-s.queue)
+		}
+		if len(pending) == 0 && !s.trimsPending() {
+			return
+		}
+		for attempt := 0; ; attempt++ {
+			err := s.commit(pending)
+			if err == nil {
+				pending = pending[:0]
+				return
+			}
+			if now := time.Now(); now.Sub(s.failed) > time.Minute { // once a minute, not every flush
+				s.failed = now
+				s.log.Error("historydb: writing the history failed; trying again", "error", err.Error(), "updates", len(pending))
+			}
+			if !closing || attempt >= 3 {
+				break
+			}
+			time.Sleep(retryDelay)
+		}
+		if len(pending) > maxPending { // writes keep failing: keep the drops, give up the updates
+			kept := pending[:0]
+			for _, it := range pending {
+				if it.u == nil {
+					kept = append(kept, it)
+				} else {
+					s.stuck.Add(1)
+				}
+			}
+			pending = kept
+		}
+	}
 	for {
 		select {
 		case it := <-s.queue:
-			batch = append(batch[:0], it)
-		case <-s.stop:
-			for { // what was saved before Close
-				batch = batch[:0]
-				for len(batch) < maxBatch && len(s.queue) > 0 {
-					batch = append(batch, <-s.queue)
-				}
-				if len(batch) == 0 {
-					s.commit(nil) // the last trims
-					return
-				}
-				s.commitRetrying(batch, true)
+			if pending = append(pending, it); len(pending) >= maxPending {
+				write(false)
 			}
+		case <-tick.C:
+			write(false)
+		case <-s.flushNow:
+			write(false)
+		case <-s.stop:
+			write(true)
+			return
 		}
-		for len(batch) < maxBatch && len(s.queue) > 0 {
-			batch = append(batch, <-s.queue)
-		}
-		s.commitRetrying(batch, false)
 	}
 }
 
-// commitRetrying commits batch until it succeeds; once the store is closing it tries a few times only.
-func (s *Store) commitRetrying(batch []item, closing bool) {
-	for attempt := 0; ; attempt++ {
-		err := s.commit(batch)
-		s.failing.Store(err != nil)
-		if err == nil {
-			return
-		}
-		s.log.Error("historydb: writing the history failed; retrying", "error", err.Error(), "updates", len(batch))
-		if closing && attempt >= 3 {
-			return
-		}
-		select {
-		case <-time.After(retryDelay):
-		case <-s.stop:
-			closing = true
-		}
-	}
+// trimsPending reports whether hubs asked for deletes since the last write.
+func (s *Store) trimsPending() bool {
+	s.tmu.Lock()
+	defer s.tmu.Unlock()
+	return len(s.trims) > 0
 }
 
 // commit writes batch and the pending trims in one transaction, then wakes the waiters.

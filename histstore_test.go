@@ -2,58 +2,31 @@ package gossiper
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/paularlott/gossiper/auth"
 )
 
-// fakeStore is a HistoryStore whose health, saves and writes the test decides.
+// fakeStore is a HistoryStore that records what it is given.
 type fakeStore struct {
-	unhealthy atomic.Bool
-	refuse    atomic.Bool // Save takes nothing
-	fail      atomic.Bool // Wait fails
-	mu        sync.Mutex
-	next      uint64
-	dropped   []string
+	mu      sync.Mutex
+	saved   []string
+	dropped []string
 }
 
 func (f *fakeStore) Load(string, func(*Update)) error { return nil }
 
 func (f *fakeStore) Trim(string, uint64, string) {}
 
-func (f *fakeStore) Ready(ctx context.Context) error {
-	for f.unhealthy.Load() {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(time.Millisecond):
-		}
-	}
-	return nil
-}
-
-func (f *fakeStore) Save(*Update) uint64 {
-	if f.refuse.Load() {
-		return 0
-	}
+func (f *fakeStore) Save(u *Update) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.next++
-	return f.next
-}
-
-func (f *fakeStore) Wait(context.Context, uint64) error {
-	if f.fail.Load() {
-		return errors.New("disk failing")
-	}
-	return nil
+	f.saved = append(f.saved, u.Data)
+	f.mu.Unlock()
 }
 
 func (f *fakeStore) Drop(_ context.Context, tenant string) error {
@@ -63,74 +36,30 @@ func (f *fakeStore) Drop(_ context.Context, tenant string) error {
 	return nil
 }
 
-// A store that cannot keep up refuses publishes before they are delivered; one that does not take or write an
-// update reports it published but not stored.
-func TestStoreRefusesOrReportsNotStored(t *testing.T) {
-	defer func(d time.Duration) { storeWait = d }(storeWait)
-	storeWait = 100 * time.Millisecond
+func (f *fakeStore) savedData() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.saved...)
+}
+
+// The hub saves every update it applies to its store, and a publish is answered without waiting for the disk: on a
+// form POST and on a stream alike.
+func TestStoreSavesWithoutWaiting(t *testing.T) {
 	st := &fakeStore{}
 	e := newEnv(t, Config{Anonymous: true, HistoryStore: st})
 	sub := e.subscribe(t, "", "https://s.test/a")
 	tok := tokenFor(t, all, nil)
-	form := func(d string) url.Values { return url.Values{"topic": {"https://s.test/a"}, "data": {d}} }
-
-	st.unhealthy.Store(true)
-	if r := e.post(t, tok, form("refused")); r.code != 503 || !strings.Contains(r.body, "History store unavailable") {
-		t.Fatalf("unhealthy store: %d %q", r.code, r.body)
+	if r := e.post(t, tok, url.Values{"topic": {"https://s.test/a"}, "data": {"posted"}}); r.code != 200 {
+		t.Fatalf("form publish: %d %q", r.code, r.body)
 	}
-	st.unhealthy.Store(false)
-
-	// A store that catches up within storeWait (a burst) only slows the publish down.
-	st.unhealthy.Store(true)
-	time.AfterFunc(30*time.Millisecond, func() { st.unhealthy.Store(false) })
-	if r := e.post(t, tok, form("waited")); r.code != 200 {
-		t.Fatalf("store caught up: %d %q", r.code, r.body)
+	c := e.stream(t, tok)
+	c.send(t, `{"topic":["https://s.test/a"],"data":"streamed"}`)
+	if a := c.answer(t); a.ID == "" || a.Status != 0 {
+		t.Fatalf("stream publish: %+v", a)
 	}
-
-	st.refuse.Store(true)
-	if r := e.post(t, tok, form("unsaved")); r.code != 503 || !strings.Contains(r.body, "Published, not stored") {
-		t.Fatalf("save refused: %d %q", r.code, r.body)
-	}
-	st.refuse.Store(false)
-
-	st.fail.Store(true)
-	if r := e.post(t, tok, form("unwritten")); r.code != 503 || !strings.Contains(r.body, "Published, not stored") {
-		t.Fatalf("write failed: %d %q", r.code, r.body)
-	}
-	st.fail.Store(false)
-	// The refused update was never delivered; the others were.
-	sub.expect("waited", "unsaved", "unwritten")
-}
-
-// On a stream, an update published but not stored is answered with its id and 503; once the store fails, what was
-// published is answered so, and the stream ends with a last line.
-func TestStreamNotStored(t *testing.T) {
-	defer func(d time.Duration) { storeWait = d }(storeWait)
-	storeWait = 100 * time.Millisecond
-	st := &fakeStore{}
-	e := newEnv(t, Config{Anonymous: true, HistoryStore: st})
-	c := e.stream(t, tokenFor(t, all, nil))
-	line := `{"topic":["https://s.test/a"],"data":"x"}`
-
-	st.refuse.Store(true)
-	c.send(t, line)
-	if a := c.answer(t); a.ID == "" || a.Status != 503 || a.Error != "Published, not stored" {
-		t.Fatalf("save refused: %+v", a)
-	}
-	st.refuse.Store(false)
-	st.unhealthy.Store(true)
-	c.send(t, line)
-	if a := c.answer(t); a.ID != "" || a.Line != 2 || a.Status != 503 {
-		t.Fatalf("unhealthy store: %+v", a)
-	}
-	st.unhealthy.Store(false)
-	st.fail.Store(true)
-	c.send(t, line)
-	if a := c.answer(t); a.ID == "" || a.Status != 503 {
-		t.Fatalf("write failed: %+v", a)
-	}
-	if a := c.answer(t); a.ID != "" || a.Line != 0 || a.Status != 503 {
-		t.Fatalf("the stream should end: %+v", a)
+	sub.expect("posted", "streamed")
+	if got := st.savedData(); strings.Join(got, ",") != "posted,streamed" {
+		t.Fatalf("saved %v", got)
 	}
 }
 

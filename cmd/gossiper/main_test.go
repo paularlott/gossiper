@@ -151,7 +151,8 @@ func settingCases() []settingCase {
 		{"metrics", nil, `metrics = true`, "true", "GOSSIPER_METRICS", func(s *server.Settings) { s.Metrics = true }},
 		{"cluster-insecure", nil, `cluster_insecure = true`, "true", "GOSSIPER_CLUSTER_INSECURE", func(s *server.Settings) { s.ClusterInsecure = true }},
 		{"history-budget", []string{"1048576"}, `history_budget = 1048576`, "1048576", "GOSSIPER_HISTORY_BUDGET", func(s *server.Settings) { s.HistoryBudget = 1048576 }},
-		{"history-db", []string{"/data/history.db"}, `history_db = "/data/history.db"`, "/data/history.db", "GOSSIPER_HISTORY_DB", func(s *server.Settings) { s.HistoryDB = "/data/history.db" }},
+		{"history-persist", nil, `history_persist = true`, "true", "GOSSIPER_HISTORY_PERSIST", func(s *server.Settings) { s.HistoryPersist = true }},
+		{"history-flush", []string{"5s"}, `history_flush = "5s"`, "5s", "GOSSIPER_HISTORY_FLUSH", func(s *server.Settings) { s.HistoryFlush = "5s" }},
 		{"admin-listen", []string{"127.0.0.1:9090"}, `admin_listen = "127.0.0.1:9090"`, "127.0.0.1:9090", "GOSSIPER_ADMIN_LISTEN", func(s *server.Settings) { s.AdminListen = "127.0.0.1:9090" }},
 		{"trusted-proxies", []string{"10.0.0.0/8"}, `trusted_proxies = ["10.0.0.0/8"]`, "10.0.0.0/8", "GOSSIPER_TRUSTED_PROXIES", func(s *server.Settings) { s.TrustedProxies = []string{"10.0.0.0/8"} }},
 		{"max-subscribers", []string{"500"}, `max_subscribers = 500`, "500", "GOSSIPER_MAX_SUBSCRIBERS", func(s *server.Settings) { s.MaxSubscribers = 500 }},
@@ -252,12 +253,12 @@ func TestSettingConfigFile(t *testing.T) {
 }
 
 func TestSettingPrecedence(t *testing.T) {
-	cfg := writeConfig(t, `node_id = "from-file"`, `log_level = "from-file"`, `dispatch_buffer = 7`)
-	t.Setenv("GOSSIPER_NODE_ID", "from-env")
+	cfg := writeConfig(t, `heartbeat = "1s"`, `log_level = "from-file"`, `dispatch_buffer = 7`)
+	t.Setenv("GOSSIPER_HEARTBEAT", "2s")
 	t.Setenv("GOSSIPER_LOG_LEVEL", "from-env")
-	got := parse(t, "--config", cfg, "--node-id", "from-flag")
-	if got.NodeID != "from-flag" || got.LogLevel != "from-env" || got.DispatchBuffer != 7 {
-		t.Fatalf("flag > environment > file: %q %q %d", got.NodeID, got.LogLevel, got.DispatchBuffer)
+	got := parse(t, "--config", cfg, "--heartbeat", "3s")
+	if got.Heartbeat != "3s" || got.LogLevel != "from-env" || got.DispatchBuffer != 7 {
+		t.Fatalf("flag > environment > file: %q %q %d", got.Heartbeat, got.LogLevel, got.DispatchBuffer)
 	}
 }
 

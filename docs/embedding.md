@@ -26,7 +26,7 @@ id, err := hub.Publish(ctx, &gossiper.Update{Topics: []string{"https://example.c
 | --- | --- |
 | [`gossiper`](..) | the hub: HTTP handlers (streaming publish included), fan-out, history, the `Transport` interface |
 | [`cluster`](../cluster) | replication over a gossip cluster |
-| [`historydb`](../historydb) | the history in a SQLite file, written in batches (`--history-db`) |
+| [`historydb`](../historydb) | the history written to a SQLite file in the background (`--history-persist`) |
 | [`client`](../client) | Go client: streaming publish and SSE, or Mercure's HTTP protocol with other hubs ([docs](streaming-and-go-client.md#go-client)) |
 | [`auth`](../auth) | JWT verification: draft-07 tokens and RFC 9068 access tokens, static keys, JWK Sets and discovery |
 | [`topic`](../topic), [`urlpattern`](../urlpattern) | draft-07 topic selectors; WHATWG URL Pattern matching in linear time |

@@ -161,7 +161,7 @@ func TestSubscriptionsAPIAuth(t *testing.T) {
 		wantA string
 	}{
 		{"no token", "", subsBase, 401, "Bearer"},
-		{"malformed", "x", subsBase, 400, `Bearer error="invalid_request"`},
+		{"malformed", "x", subsBase, 401, `Bearer error="invalid_token"`},
 		{"no subscribe claim", tokenFor(t, all, nil), subsBase, 403, `Bearer error="insufficient_scope"`},
 		{"empty subscribe", tokenFor(t, nil, []string{}), subsBase, 403, `Bearer error="insufficient_scope"`},
 		{"star", tokenFor(t, nil, all), subsBase, 200, ""},

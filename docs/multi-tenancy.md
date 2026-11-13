@@ -41,7 +41,7 @@ Tenants come from a file (`--tenants-file`), from the [admin API](#admin-api), o
 
 ## Admin API
 
-With a database (`--database`, an SQLite file) and an API token (`--api-token`, plain or a bcrypt hash), an identity provider, or both, tenants are added, changed and removed at runtime:
+With an API token (`--api-token`, plain or a bcrypt hash), an identity provider, or both, tenants are added, changed and removed at runtime. They are kept in the database (`--database`, an SQLite file), or in memory without one: in a cluster a node that restarts gets them back from the others, but stopping every node loses them.
 
 ```bash
 gossiper serve --database /data/tenants.db --api-token "$ADMIN_TOKEN" ...
@@ -57,7 +57,7 @@ curl -H "Authorization: Bearer $ADMIN_TOKEN" -X DELETE https://events.example/ap
 
 - **Every node applies a change at once.** Each node's database replicates over the cluster's gossip network, and a node that was down catches up when it returns. Give every node a database. Concurrent changes to one tenant settle on the later one.
 - **Live.** A new tenant's hub is ready within milliseconds. Changing a tenant's keys restarts its hub (subscribers reconnect with `Last-Event-ID`); changing only its hosts keeps streams open. To change keys without refusing clients' current tokens, [rotate them](#rotating-keys).
-- **Delete cleans up.** Deleting a tenant closes its streams and deletes its history, in memory and in `--history-db`, on every node. A tenant created again under the same name starts empty, even on a node that was down while it was deleted. Deletions are remembered, so a returning node does not bring a deleted tenant back.
+- **Delete cleans up.** Deleting a tenant closes its streams and deletes its history, in memory and in the database, on every node. A tenant created again under the same name starts empty, even on a node that was down while it was deleted. Deletions are remembered, so a returning node does not bring a deleted tenant back.
 - **Validation.** An invalid tenant gets 400. One that clashes with another tenant (a host, a key, or a name in the tenants file) gets 409 and changes nothing. Tenants from the file are shown read-only and cannot be changed or deleted here. Changes are logged.
 - **Secrets are write-only.** HMAC keys are never returned, so a `PUT` must carry them again. The database holds them as given (deleted ones are wiped from the file): protect it like the tenants file.
 - **Limits.** Failed authentications are limited to 60 per address and minute. With a bcrypt-hashed `--api-token`, at most four comparisons run at once; further requests get 429.

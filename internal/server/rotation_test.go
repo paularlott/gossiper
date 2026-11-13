@@ -251,7 +251,6 @@ func TestRotateAcrossCluster(t *testing.T) {
 	var nodes []*node
 	for i := range 2 {
 		s := adminSettings(t, "")
-		s.NodeID = uuid.NewString()
 		s.Database = filepath.Join(t.TempDir(), fmt.Sprintf("node%d.db", i))
 		s.ClusterBind = binds[i]
 		s.ClusterKey = testClusterKey
@@ -359,5 +358,33 @@ func TestRotateNeedsWriteOnTheTenant(t *testing.T) {
 		if code, out := call(t, n.base, tc.method, tc.path, tc.tok, tc.body); code != tc.want {
 			t.Errorf("%s: %d %v, want %d", tc.name, code, out, tc.want)
 		}
+	}
+}
+
+// A clustered node keeps its id in its database: it comes back as the same node after a restart, and the database
+// holds the id its records are written under.
+func TestNodeIDKeptInDatabase(t *testing.T) {
+	bind := freePort(t, "both")
+	s := adminSettings(t, "")
+	s.Database = filepath.Join(t.TempDir(), "node.db")
+	s.ClusterBind = bind
+	s.ClusterKey = testClusterKey
+	n := startNode(t, s)
+	first := n.gossip.LocalNode().ID.String()
+	if got := n.store.NodeID(); got != first {
+		t.Errorf("records written as %q, the node is %q", got, first)
+	}
+	if err := n.stop(); err != nil {
+		t.Fatal(err)
+	}
+	n = startNode(t, s)
+	if again := n.gossip.LocalNode().ID.String(); again != first {
+		t.Fatalf("the node's id changed across a restart: %q, then %q", first, again)
+	}
+	other := s
+	other.Database = filepath.Join(t.TempDir(), "other.db")
+	other.ClusterBind = freePort(t, "both")
+	if o := startNode(t, other); o.gossip.LocalNode().ID.String() == first {
+		t.Error("two databases gave the same node id")
 	}
 }

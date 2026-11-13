@@ -277,11 +277,14 @@ var knPreflight = kn("Gossiper answers CORS preflights for POST and echoes any (
 	"header:Access-Control-Allow-Origin", "header:Access-Control-Allow-Credentials", "header:Access-Control-Allow-Methods", "header:Access-Control-Allow-Headers")
 
 var (
-	// An undecodable token: Gossiper classifies it as a malformed request (400 invalid_request, RFC 6750); the
-	// reference answers 401 invalid_token for a token it can parse structurally but not decode, and for a bad cookie
-	// or query token. Clients treat every 400/401 as "authentication failed".
-	knBadTokenClass = kn("Gossiper: 400 invalid_request for a token that cannot be decoded; reference: 401 invalid_token", "status", "header:WWW-Authenticate")
-	knBadTokenQuery = kn("Gossiper: 400 invalid_request for an undecodable token in the query; reference: 401 with a bare Bearer challenge", "status", "header:WWW-Authenticate")
+	// An undecodable token: Gossiper answers 401 invalid_token, as RFC 6750 says for a malformed token; the reference
+	// answers 401 for a token it can parse structurally but not decode, and 400 for some others. Clients treat every
+	// 400/401 as "authentication failed".
+	knBadTokenClass = kn("an undecodable token: Gossiper answers 401 invalid_token (RFC 6750); the reference's answer depends on how it fails to decode", "status", "header:WWW-Authenticate")
+	// A token that is garbage (not a JWS at all): Gossiper answers 401 invalid_token, the reference in draft-07 mode
+	// 400 invalid_request.
+	knGarbageToken  = kn("a garbage token: Gossiper answers 401 invalid_token (RFC 6750 counts a malformed token as invalid); the reference, in draft-07 mode, 400 invalid_request", "status", "header:WWW-Authenticate")
+	knBadTokenQuery = kn("an undecodable token in the query: Gossiper answers 401 invalid_token; reference: 401 with a bare Bearer challenge", "status", "header:WWW-Authenticate")
 )
 
 func eq(t *testing.T, what, got, want string) {
@@ -390,8 +393,8 @@ func TestPublishAuthMatrix(t *testing.T) {
 		{name: "valid-publish-exact-topic", req: post(bearer(pubToken(topic)), nil)},
 		{name: "valid-publish-template", req: post(bearer(pubToken(ns("auth")+"{/x}")), nil)},
 		{name: "bad-signature-wrong-key", req: post(bearer(mintWith("another-secret-another-secret-123456", jwt.SigningMethodHS256, mercureClaims([]string{"*"}, nil))), nil)},
-		{name: "malformed-garbage", req: post(bearer("not-a-jwt"), nil)},
-		{name: "malformed-two-segments", req: post(bearer("aaa.bbb"), nil)},
+		{name: "malformed-garbage", known: knGarbageToken, req: post(bearer("not-a-jwt"), nil)},
+		{name: "malformed-two-segments", known: knGarbageToken, req: post(bearer("aaa.bbb"), nil)},
 		{name: "malformed-bad-base64-payload", known: knBadTokenClass, req: post(bearer(strings.Split(good, ".")[0]+".%%%."+strings.Split(good, ".")[2]), nil)},
 		{name: "authorization-basic", req: post("Basic dXNlcjpwYXNz", nil)},
 		{name: "authorization-token-without-bearer", known: kn("Gossiper accepts a bare JWT as the Authorization header value (no Bearer scheme); the reference answers 400 invalid_request", "status", "header:WWW-Authenticate"), req: post(good, nil)},
@@ -433,7 +436,7 @@ func TestPublishAuthMatrix(t *testing.T) {
 		{name: "cookie-null-origin", req: cookieReq(good, map[string]string{"Origin": "null"})},
 		{name: "cookie-referer-allowed", req: cookieReq(good, map[string]string{"Referer": allowedOrigin + "/page"})},
 		{name: "cookie-referer-bad", req: cookieReq(good, map[string]string{"Referer": badOrigin + "/page"})},
-		{name: "cookie-bad-origin-bad-token", req: cookieReq("garbage", map[string]string{"Origin": badOrigin})},
+		{name: "cookie-bad-origin-bad-token", known: knGarbageToken, req: cookieReq("garbage", map[string]string{"Origin": badOrigin})},
 		{name: "cookie-allowed-origin-bad-token", known: knBadTokenClass, req: cookieReq("garbage", map[string]string{"Origin": allowedOrigin})},
 		{name: "cookie-allowed-origin-wrong-key", req: cookieReq(mintWith("another-secret-another-secret-123456", jwt.SigningMethodHS256, mercureClaims([]string{"*"}, nil)), map[string]string{"Origin": allowedOrigin})},
 		{name: "cookie-allowed-origin-no-publish-scope", req: cookieReq(pubToken(), map[string]string{"Origin": allowedOrigin})},
@@ -457,7 +460,7 @@ func TestPublishAuthMatrix(t *testing.T) {
 			return r
 		}},
 		// precedence between the sources
-		{name: "header-bad-cookie-good", req: func() req {
+		{name: "header-bad-cookie-good", known: knGarbageToken, req: func() req {
 			r := publishReq(body, bearer("garbage"), map[string]string{"Origin": allowedOrigin})
 			r.Header["Cookie"] = "mercureAuthorization=" + good
 			return r
@@ -467,7 +470,7 @@ func TestPublishAuthMatrix(t *testing.T) {
 			r.Header["Cookie"] = "mercureAuthorization=garbage"
 			return r
 		}},
-		{name: "query-good-header-bad", req: func() req {
+		{name: "query-good-header-bad", known: knGarbageToken, req: func() req {
 			r := publishReq(body, bearer("garbage"), nil)
 			r.Path += "?authorization=" + url.QueryEscape(good)
 			return r
@@ -582,7 +585,7 @@ func TestSubscribeRequests(t *testing.T) {
 		{name: "valid-token-publish-only-claims", req: get(q(), map[string]string{"Authorization": bearer(pubToken("*"))})},
 		{name: "valid-token-no-mercure-claim", req: get(q(), map[string]string{"Authorization": bearer(mint(jwt.MapClaims{"sub": "x"}))})},
 		{name: "bad-signature", req: get(q(), map[string]string{"Authorization": bearer(mintWith("another-secret-another-secret-123456", jwt.SigningMethodHS256, mercureClaims(nil, []string{"*"})))})},
-		{name: "malformed", req: get(q(), map[string]string{"Authorization": bearer("garbage")})},
+		{name: "malformed", known: knGarbageToken, req: get(q(), map[string]string{"Authorization": bearer("garbage")})},
 		{name: "authorization-basic", req: get(q(), map[string]string{"Authorization": "Basic dXNlcjpwYXNz"})},
 		{name: "expired", req: get(q(), map[string]string{"Authorization": bearer(mint(func() jwt.MapClaims {
 			c := mercureClaims(nil, []string{"*"})
@@ -595,8 +598,8 @@ func TestSubscribeRequests(t *testing.T) {
 		{name: "cookie-valid-with-allowed-origin", req: get(q(), map[string]string{"Cookie": "mercureAuthorization=" + sub, "Origin": allowedOrigin})},
 		{name: "cookie-valid-with-bad-origin", req: get(q(), map[string]string{"Cookie": "mercureAuthorization=" + sub, "Origin": badOrigin})},
 		{name: "query-authorization-valid", req: get(q("authorization", sub), nil)},
-		{name: "query-authorization-bad", known: kn("an undecodable ?authorization= on a subscription: the reference ignores it and streams anonymously (200); Gossiper refuses it (400 invalid_request)", "status", "header:Content-Type", "header:WWW-Authenticate"), req: get(q("authorization", "garbage"), nil)},
-		{name: "header-bad-query-good", req: get(q("authorization", sub), map[string]string{"Authorization": bearer("garbage")})},
+		{name: "query-authorization-bad", known: kn("an undecodable ?authorization= on a subscription: the reference ignores it and streams anonymously (200); Gossiper refuses it (401 invalid_token)", "status", "header:Content-Type", "header:WWW-Authenticate"), req: get(q("authorization", "garbage"), nil)},
+		{name: "header-bad-query-good", known: knGarbageToken, req: get(q("authorization", sub), map[string]string{"Authorization": bearer("garbage")})},
 		{name: "header-good-cookie-bad", req: get(q(), map[string]string{"Authorization": bearer(sub), "Cookie": "mercureAuthorization=garbage"})},
 		{name: "last-event-id-header-unknown", req: get(q(), map[string]string{"Last-Event-ID": "urn:uuid:00000000-0000-7000-8000-000000000000"})},
 		{name: "last-event-id-query-unknown", req: get(q("lastEventID", "unknown-id"), nil)},
@@ -945,6 +948,7 @@ func TestSubscriptionsAPI(t *testing.T) {
 			caseKnown := map[string]known{
 				"collection-head":        kn("HEAD on the subscriptions API: reference 405, Gossiper answers like GET without a body", "*"),
 				"too-many-path-segments": kn("/subscriptions/a/b/c: the reference answers 400 (\"unsupported topic matcher type\"), Gossiper 404", "*"),
+				"bad-token":              kn("a garbage token: Gossiper answers 401 invalid_token (RFC 6750); the reference, in draft-07 mode, 400 invalid_request", "status", "header:WWW-Authenticate", "body"),
 			}
 			cases := []c{
 				{"no-token", func(a, tk string) req { return req{Path: subsPath} }},

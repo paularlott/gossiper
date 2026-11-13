@@ -63,36 +63,6 @@ func (h *Hub) replicated(ctx context.Context, u *Update) error {
 	return u.copied(ctx)
 }
 
-// settled waits until u, published on this node, is stored and has its copies.
-func (h *Hub) settled(ctx context.Context, u *Update) error {
-	if err := h.persisted(ctx, u); err != nil {
-		return err
-	}
-	return h.replicated(ctx, u)
-}
-
-// Stored implements Host: it returns once every update the hub saved so far is stored (at once without a store).
-// A node acknowledges a batch it was asked to keep copies of once it is stored.
-func (h *Hub) Stored(ctx context.Context) error {
-	t := h.lastTicket.Load()
-	if h.store == nil || t == 0 {
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(ctx, persistTimeout)
-	defer cancel()
-	return h.store.Wait(ctx, t)
-}
-
-// noteTicket records t as saved, for Stored.
-func (h *Hub) noteTicket(t uint64) {
-	for {
-		cur := h.lastTicket.Load()
-		if t <= cur || h.lastTicket.CompareAndSwap(cur, t) {
-			return
-		}
-	}
-}
-
 // Idempotent updates are remembered by ID for idempotencyWindow, and up to idempotencyMax at a time (a busier hub
 // remembers them for less): two generations of a set, the older dropped when the newer is full or old enough.
 const (

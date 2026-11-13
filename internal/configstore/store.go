@@ -180,11 +180,9 @@ type Store struct {
 	}
 }
 
-// Open opens (or creates) the store at o.Path, loads its records and, with o.Cluster, starts replicating.
+// Open opens (or creates) the store at o.Path, loads its records and, with o.Cluster, starts replicating. Without
+// a path the store is in memory: in a cluster its records live on in the other nodes, and come back from them.
 func Open(o Options) (*Store, error) {
-	if o.Path == "" {
-		return nil, errors.New("configstore: no path")
-	}
 	if o.MsgBase == 0 {
 		o.MsgBase = gossip.UserMsg + 192
 	}
@@ -197,26 +195,10 @@ func Open(o Options) (*Store, error) {
 	if o.Logger == nil {
 		o.Logger = logger.NewNullLogger()
 	}
-	if dir := filepath.Dir(o.Path); dir != "" {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return nil, fmt.Errorf("configstore: %w", err)
-		}
-	}
-	// The records may hold secrets: a new database is readable by its owner only, and SQLite gives its -wal and -shm
-	// files the database file's permissions.
-	if f, err := os.OpenFile(o.Path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600); err == nil {
-		f.Close()
-	} else if !errors.Is(err, os.ErrExist) {
-		return nil, fmt.Errorf("configstore: %w", err)
-	}
-	db, err := sql.Open("sqlite", sqliteDSN(o.Path))
+	db, err := openDB(o.Path)
 	if err != nil {
-		return nil, fmt.Errorf("configstore: %w", err)
+		return nil, err
 	}
-	// One connection: every read is served from memory, and SQLite has one writer anyway.
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
-	db.SetConnMaxLifetime(0)
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Store{
 		opts: o, log: o.Logger, db: db, clock: hlc.NewClock(), ctx: ctx, cancel: cancel,
@@ -231,7 +213,6 @@ func Open(o Options) (*Store, error) {
 		return nil, fmt.Errorf("configstore: %s: %w", o.Path, err)
 	}
 	if s.c != nil {
-		s.origin = s.c.LocalNode().ID.String()
 		if err := s.startReplication(); err != nil {
 			cancel()
 			db.Close()
@@ -241,6 +222,93 @@ func Open(o Options) (*Store, error) {
 	s.wg.Add(1)
 	go s.notifyLoop()
 	return s, nil
+}
+
+// openDB opens (or creates) the database file at path, or a database in memory for "".
+func openDB(path string) (*sql.DB, error) {
+	if path == "" {
+		db, err := sql.Open("sqlite", "file::memory:")
+		if err != nil {
+			return nil, fmt.Errorf("configstore: %w", err)
+		}
+		// One connection, kept: the database lives as long as it does.
+		db.SetMaxOpenConns(1)
+		db.SetMaxIdleConns(1)
+		db.SetConnMaxLifetime(0)
+		db.SetConnMaxIdleTime(0)
+		return db, nil
+	}
+	if dir := filepath.Dir(path); dir != "" {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return nil, fmt.Errorf("configstore: %w", err)
+		}
+	}
+	// The records may hold secrets: a new database is readable by its owner only, and SQLite gives its -wal and -shm
+	// files the database file's permissions.
+	if f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600); err == nil {
+		f.Close()
+	} else if !errors.Is(err, os.ErrExist) {
+		return nil, fmt.Errorf("configstore: %w", err)
+	}
+	db, err := sql.Open("sqlite", sqliteDSN(path))
+	if err != nil {
+		return nil, fmt.Errorf("configstore: %w", err)
+	}
+	// One connection: every read is served from memory, and SQLite has one writer anyway.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(0)
+	return db, nil
+}
+
+// StoredNodeID returns the node id kept in the database at path, making and keeping a random one (a UUID) when it
+// has none: a node whose id comes from its database keeps it across restarts, and its records keep their origin.
+// Call it before Open, to start the node's cluster with that id.
+func StoredNodeID(path string) (string, error) {
+	db, err := openDB(path)
+	if err != nil {
+		return "", err
+	}
+	defer db.Close()
+	ctx := context.Background()
+	if err := prepare(ctx, db); err != nil {
+		return "", fmt.Errorf("configstore: %s: %w", path, err)
+	}
+	id, err := keepNodeID(ctx, db, "")
+	if err != nil {
+		return "", fmt.Errorf("configstore: %s: %w", path, err)
+	}
+	return id, nil
+}
+
+// prepare creates the tables if missing and checks the schema version.
+func prepare(ctx context.Context, db *sql.DB) error {
+	if _, err := db.ExecContext(ctx, schema); err != nil {
+		return err
+	}
+	var v string
+	if err := db.QueryRowContext(ctx, `SELECT value FROM meta WHERE name = 'schema'`).Scan(&v); err != nil {
+		return err
+	}
+	if v != "1" {
+		return fmt.Errorf("unsupported schema version %q", v)
+	}
+	return nil
+}
+
+// keepNodeID returns the database's node id: id when given (kept, replacing any other), otherwise the one it holds,
+// or a new random one it keeps from now on.
+func keepNodeID(ctx context.Context, db *sql.DB, id string) (string, error) {
+	if id != "" {
+		_, err := db.ExecContext(ctx, `INSERT INTO meta (name, value) VALUES ('node_id', ?)
+			ON CONFLICT (name) DO UPDATE SET value = excluded.value`, id)
+		return id, err
+	}
+	if _, err := db.ExecContext(ctx, `INSERT OR IGNORE INTO meta (name, value) VALUES ('node_id', ?)`, newID()); err != nil {
+		return "", err
+	}
+	err := db.QueryRowContext(ctx, `SELECT value FROM meta WHERE name = 'node_id'`).Scan(&id)
+	return id, err
 }
 
 func sqliteDSN(path string) string {
@@ -277,25 +345,18 @@ INSERT OR IGNORE INTO meta (name, value) VALUES ('schema', '1');
 // load creates the tables if missing, reads every record into memory and sets the clock past every version, so
 // that a write made now wins over every record the store holds.
 func (s *Store) load(ctx context.Context) error {
-	if _, err := s.db.ExecContext(ctx, schema); err != nil {
+	if err := prepare(ctx, s.db); err != nil {
 		return err
 	}
-	var v string
-	if err := s.db.QueryRowContext(ctx, `SELECT value FROM meta WHERE name = 'schema'`).Scan(&v); err != nil {
+	// The records' origin: a single node's stored id, stable across restarts; in a cluster, the node's own id, kept
+	// in the database too (StoredNodeID gives it back at the next start).
+	var want string
+	if s.c != nil {
+		want = s.c.LocalNode().ID.String()
+	}
+	var err error
+	if s.origin, err = keepNodeID(ctx, s.db, want); err != nil {
 		return err
-	}
-	if v != "1" {
-		return fmt.Errorf("unsupported schema version %q", v)
-	}
-	if s.c == nil {
-		// A single node's origin is stable across restarts: a stored random id.
-		id := newID()
-		if _, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO meta (name, value) VALUES ('node_id', ?)`, id); err != nil {
-			return err
-		}
-		if err := s.db.QueryRowContext(ctx, `SELECT value FROM meta WHERE name = 'node_id'`).Scan(&s.origin); err != nil {
-			return err
-		}
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT key, value, version, origin, deleted FROM records`)
 	if err != nil {

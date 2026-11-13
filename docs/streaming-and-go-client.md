@@ -15,7 +15,7 @@ It is the same hub, with the same tokens, grants, topics, private updates and hi
 
 - **Fields:** those of a form publish (`topic` as an array, `data`, `id`, `type`, `private`, `retry`), plus `replicas` ([copies](clustering.md#copies-and-idempotent-publishes)).
 - **A refused update** is answered with its line number and the stream goes on: `{"line":n,"status":403,"error":"insufficient_scope"}`.
-- **With `--history-db`** an update is answered once it is stored. One published but not stored (the disk failed) is answered `{"id":"…","status":503,"error":"Published, not stored"}`.
+- **No answer waits for the disk:** with `--history-persist` the history is written in the background.
 - **The stream ends** when the client closes the body (a body that ends is a batch), or with a last line from the hub that has no `line` field:
   - `401` when the token expires;
   - `503` when the hub closes or its store fails;

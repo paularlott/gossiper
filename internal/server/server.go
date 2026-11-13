@@ -89,11 +89,13 @@ type Settings struct {
 	HistoryBytes   int64
 	HistoryBudget  int64 // all the tenants' histories together
 	HistoryAge     string
-	HistoryDB      string // SQLite file the history is kept in, so it survives restarts
+	// HistoryPersist writes the history to the database every HistoryFlush, so a node has it back after a restart:
+	// a single node, or every node of a cluster that stopped all at once (otherwise a starting node copies a peer's).
+	HistoryPersist bool
+	HistoryFlush   string
 	ReplayWindow   string
 	MaxPublishSize int64
 
-	NodeID           string
 	ClusterBind      string
 	ClusterAdvertise string
 	ClusterPeers     []string
@@ -157,7 +159,7 @@ func Defaults() Settings {
 		Listen: ":8080", LogLevel: "info", Protocol: "modern", TrustedIssuers: []string{"https://localhost"}, LogFmt: "console", Heartbeat: "30s",
 		WriteTimeout: "30s", DispatchBuffer: 1000, HistorySize: 10000, HistoryBytes: 64 << 20, HistoryBudget: 1 << 30, ReplayWindow: "5s",
 		MaxPublishSize: 1 << 20, MaxSelectors: 256, MaxPatterns: 32, HistoryAge: "1h", ShutdownTimeout: "10s",
-		MaxSubscribers: 100000, MaxPerIP: 1000, ShutdownDelay: "0s",
+		MaxSubscribers: 100000, MaxPerIP: 1000, ShutdownDelay: "0s", HistoryFlush: "1s",
 	}
 }
 
@@ -266,7 +268,6 @@ func New(s Settings, log logger.Logger) (*Server, error) {
 		HistorySize:               s.HistorySize,
 		HistoryBytes:              s.HistoryBytes,
 		MaxPublishBytes:           s.MaxPublishSize,
-		NodeID:                    s.NodeID,
 		Logger:                    log,
 	}
 	// A key's algorithm defaults to its own (HS256 for a secret, a PEM public key's own); with a JWK Set and no
@@ -342,8 +343,15 @@ func New(s Settings, log logger.Logger) (*Server, error) {
 			}
 		}
 	}
-	if (s.APIToken != "" || s.AdminIssuer != "") && s.Database == "" {
-		return nil, errors.New("admin API: it needs a database (set database)")
+	if s.HistoryPersist && s.Database == "" {
+		return nil, errors.New("history-persist: set database, the file the history is written to")
+	}
+	historyFlush, err := duration("history flush", s.HistoryFlush)
+	if err != nil {
+		return nil, err
+	}
+	if s.HistoryFlush != "" && historyFlush <= 0 {
+		return nil, errors.New("history flush: a duration above 0, e.g. 1s")
 	}
 	if s.AdminIssuer != "" && s.AdminAudience == "" {
 		return nil, errors.New("admin issuer: set admin-audience, the admin API's identifier in the identity provider")
@@ -373,13 +381,15 @@ func New(s Settings, log logger.Logger) (*Server, error) {
 			return nil, fmt.Errorf("tenants file: tenant %q: %w", t.Name, err)
 		}
 	}
-	if len(srv.tenants) == 0 && s.Database == "" { // a single hub
+	// Tenants come from the tenants file, the admin API, or both; without either the server is a single hub.
+	adminAPI := s.APIToken != "" || s.AdminIssuer != ""
+	if len(srv.tenants) == 0 && !adminAPI { // a single hub
 		if err := hostAudience(s, protocol); err != nil {
 			return nil, err
 		}
 	}
-	if s.HistoryDB != "" {
-		if srv.histDB, err = historydb.Open(s.HistoryDB, log.WithGroup("history")); err != nil {
+	if s.HistoryPersist { // in the database, beside the tenants
+		if srv.histDB, err = historydb.Open(s.Database, historyFlush, log.WithGroup("history")); err != nil {
 			return nil, err
 		}
 		cfg.HistoryStore = srv.histDB
@@ -410,7 +420,16 @@ func New(s Settings, log logger.Logger) (*Server, error) {
 		}
 	}
 	if s.ClusterBind != "" {
-		if srv.gossip, err = newGossip(s, log); err != nil {
+		// A node keeps its id in its database, so it comes back as itself after a restart: peers resume replicating
+		// to it rather than meet a new node and wait out the old one. Without a database it has a new id each start.
+		var nodeID string
+		if s.Database != "" {
+			if nodeID, err = configstore.StoredNodeID(s.Database); err != nil {
+				cleanup()
+				return nil, fmt.Errorf("database: %w", err)
+			}
+		}
+		if srv.gossip, err = newGossip(s, nodeID, log); err != nil {
 			cleanup()
 			return nil, err
 		}
@@ -425,7 +444,7 @@ func New(s Settings, log logger.Logger) (*Server, error) {
 		}
 	}
 	changed := make(chan struct{}, 1)
-	if s.Database != "" {
+	if adminAPI { // the tenants the admin API manages: in the database, or in memory without one
 		srv.store, err = configstore.Open(configstore.Options{
 			Path: s.Database, Cluster: srv.gossip, Logger: log.WithGroup("database"),
 			OnChange: func([]string) {
@@ -496,9 +515,10 @@ func hostAudience(s Settings, p gossiper.Protocol) error {
 	return nil
 }
 
-func newGossip(s Settings, log logger.Logger) (*gossip.Cluster, error) {
+// newGossip makes this node's gossip cluster, with nodeID ("" for a random one).
+func newGossip(s Settings, nodeID string, log logger.Logger) (*gossip.Cluster, error) {
 	gc := gossip.DefaultConfig()
-	gc.NodeID = s.NodeID
+	gc.NodeID = nodeID
 	gc.BindAddr = s.ClusterBind
 	gc.AdvertiseAddr = s.ClusterAdvertise
 	gc.MsgCodec = shamaton.New()

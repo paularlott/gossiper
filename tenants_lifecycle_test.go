@@ -15,7 +15,6 @@ import (
 // memStore is a HistoryStore in memory, by tenant: Drop deletes what it holds of the tenant.
 type memStore struct {
 	mu   sync.Mutex
-	next uint64
 	rows map[string][]*Update
 }
 
@@ -30,19 +29,15 @@ func (m *memStore) Load(tenant string, fn func(*Update)) error {
 	}
 	return nil
 }
-func (m *memStore) Save(u *Update) uint64 {
+func (m *memStore) Save(u *Update) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.rows == nil {
 		m.rows = map[string][]*Update{}
 	}
 	m.rows[u.Tenant] = append(m.rows[u.Tenant], u)
-	m.next++
-	return m.next
 }
-func (m *memStore) Ready(context.Context) error        { return nil }
-func (m *memStore) Wait(context.Context, uint64) error { return nil }
-func (m *memStore) Trim(string, uint64, string)        {}
+func (m *memStore) Trim(string, uint64, string) {}
 func (m *memStore) count(tenant string) int {
 	m.mu.Lock()
 	defer m.mu.Unlock()

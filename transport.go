@@ -36,8 +36,6 @@ type Host interface {
 	// oldest first, about maxBytes of them (at least one), and whether more follow: a node that starts copies a
 	// peer's history with it.
 	History(stamp uint64, origin string, maxBytes int) (updates []*Update, more bool)
-	// Stored returns once the updates applied so far are stored (at once on a node without a HistoryStore).
-	Stored(ctx context.Context) error
 }
 
 // Subscription is one active subscription: a subscriber and one of its topic matchers. A draft-07 subscription

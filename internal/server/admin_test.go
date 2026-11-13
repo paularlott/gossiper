@@ -138,11 +138,13 @@ func TestAdminAPIAuthentication(t *testing.T) {
 	if code, _ := get(t, off.base+"/api/tenants"); code != 404 {
 		t.Errorf("API without a token: %d", code)
 	}
+	// Without a database the API keeps the tenants in memory.
 	s = tenantSettings(t, "")
 	s.APIToken = apiToken
-	if _, err := New(s, nil); err == nil || !strings.Contains(err.Error(), "database") {
-		t.Errorf("token without database: %v", err)
-	}
+	mem := startNode(t, s)
+	a := newTN(t, "alpha", false, false)
+	api(t, mem.base, "POST", "/api/tenants", a.spec(t), 201)
+	eventually(t, 5*time.Second, "alpha served from memory", func() bool { return serves(t, mem, a) })
 }
 
 func TestAdminAPITenantLifecycle(t *testing.T) {

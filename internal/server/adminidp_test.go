@@ -162,7 +162,6 @@ func TestAdminIdPSettings(t *testing.T) {
 		"issuer without audience":  func(s *Settings) { s.AdminIssuer, s.AdminAudience = "https://idp.test", "" },
 		"audience without issuer":  func(s *Settings) { s.AdminIssuer, s.AdminAudience = "", adminAudience },
 		"scope without issuer":     func(s *Settings) { s.AdminIssuer, s.AdminScope = "", "x" },
-		"issuer without database":  func(s *Settings) { s.Database, s.APIToken = "", "" },
 		"insecure issuer by https": func(s *Settings) { s.InsecureKeyURLs = false; s.AdminIssuer = "http://idp.test" },
 	} {
 		t.Run(name, func(t *testing.T) {
