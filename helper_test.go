@@ -445,6 +445,20 @@ func (f *fakeTransport) Publish(_ context.Context, u *Update) error {
 	return nil
 }
 
+// PublishRun publishes each update of us as Publish does.
+func (f *fakeTransport) PublishRun(ctx context.Context, us []*Update) []error {
+	var errs []error
+	for i, u := range us {
+		if err := f.Publish(ctx, u); err != nil {
+			if errs == nil {
+				errs = make([]error, len(us))
+			}
+			errs[i] = err
+		}
+	}
+	return errs
+}
+
 func (f *fakeTransport) RemoteSubscriptions(context.Context) ([]Subscription, bool, error) {
 	return f.remote, f.complete, f.remoteErr
 }

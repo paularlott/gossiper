@@ -79,7 +79,6 @@ curl -H "Authorization: Bearer $ADMIN_TOKEN" -X POST https://events.example/api/
 - **A previous key is still the tenant's:** no other tenant can take it until the grace period ends. A `PUT` that keeps a key keeps its previous key; one that changes the key drops it.
 - Keys from a key set URL (`publisher_jwks_url`) rotate in the key set itself. Tenants from the tenants file change in the file.
 - **Each rotation step reconnects the tenant's subscribers** (the rotation, and ending the grace period early), on every node at once, as any change of keys does. They resume with `Last-Event-ID` and miss nothing the history holds.
-- **Upgrade every node first.** Nodes older than 0.2 ignore previous keys: they refuse the old key at once, and a change to the tenant made through one of them ends the grace period everywhere.
 
 ### Signing in with an identity provider
 

@@ -5,15 +5,14 @@
 // Each peer has a sender of its own that keeps one batch in flight and sends the next once the peer has acknowledged
 // it, so a peer receives a node's updates in the order they were published there, and a slow peer gets larger batches
 // rather than a backlog of messages. A run of updates (PublishRun: a streaming publish's) is queued at once, so it goes
-// in one batch, and a peer applies each batch as a run (gossiper.ApplyRun). A batch that is not acknowledged is sent
+// in one batch, and a peer applies each batch as a run (Host.ApplyRun). A batch that is not acknowledged is sent
 // again while the peer is a member of the group, so a peer may receive an update more than once; its hub applies it
-// once (by origin and stamp). What is
-// queued for a peer that leaves, or more than MaxQueueBytes for one that cannot keep up, is dropped and counted
-// (Dropped), as are updates a peer cannot decode (a node of another version). A node that starts copies the history of
-// a peer (Options.Backfill), so its subscribers can resume with Last-Event-ID from there, and two nodes that lost each
-// other (a partition, a node declared dead) exchange what they published meanwhile when they meet again, as far as
-// their histories still hold it. A publish may ask for copies
-// (PublishCopies): it is answered once that many nodes hold the update.
+// once (by origin and stamp). What is queued for a peer that leaves, or more than MaxQueueBytes for one that cannot
+// keep up, is dropped and counted (Dropped), as are updates a peer cannot decode. Every node of a cluster must run the
+// same version of gossiper. A node that starts copies the history of a peer (Options.Backfill), so its subscribers can
+// resume with Last-Event-ID from there, and two nodes that lost each other (a partition, a node declared dead)
+// exchange what they published meanwhile when they meet again, as far as their histories still hold it. A publish
+// may ask for copies (PublishCopies): it is answered once that many nodes hold the update.
 package cluster
 
 import (
@@ -303,7 +302,7 @@ func (t *Transport) publish(u *gossiper.Update, peers []*gossip.Node, c *copies)
 	return nil
 }
 
-// PublishRun implements gossiper.RunPublisher: it applies the updates of us that it can carry on this node as one run,
+// PublishRun implements gossiper.Transport: it applies the updates of us that it can carry on this node as one run,
 // then queues them for every other hub of the group in one go, so they travel together in as few batches as
 // batchBytes allows, and the peer applies each batch as a run. An update too large to replicate fails alone
 // (ErrUpdateTooLarge), as Publish fails it.
@@ -342,7 +341,7 @@ func (t *Transport) PublishRun(_ context.Context, us []*gossiper.Update) []error
 		return errs
 	}
 	peers := t.peers()
-	gossiper.ApplyRun(t.hub, run)
+	t.hub.ApplyRun(run)
 	for _, n := range peers {
 		if l := t.linkTo(n); l != nil {
 			l.enqueue(items...)
@@ -654,7 +653,7 @@ func (l *link) rejected(n, bad int) {
 	l.t.dropped.Add(uint64(bad))
 	if !l.warned {
 		l.warned = true
-		l.t.c.Logger().Warn("cluster: a peer could not decode updates sent to it (a node of another version?); dropped",
+		l.t.c.Logger().Warn("cluster: a peer could not decode updates sent to it (are all nodes on the same version?); dropped",
 			"peer", l.node.ID.String(), "updates", bad)
 	}
 }
@@ -716,12 +715,12 @@ func (t *Transport) handlePublish(n *gossip.Node, p *gossip.Packet, r gossip.Rep
 	}
 }
 
-// apply applies a peer's batches in order, each as a run (gossiper.ApplyRun), and acknowledges each, until jobs is
+// apply applies a peer's batches in order, each as a run (Host.ApplyRun), and acknowledges each, until jobs is
 // closed.
 func (t *Transport) apply(jobs <-chan applyJob) {
 	for j := range jobs {
 		if !t.closed.Load() && len(j.us) > 0 {
-			gossiper.ApplyRun(t.hub, j.us)
+			t.hub.ApplyRun(j.us)
 			t.batches.Add(1)
 			t.batched.Add(uint64(len(j.us)))
 		}

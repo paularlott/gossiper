@@ -313,7 +313,7 @@ func TestStreamRunAroundCopies(t *testing.T) {
 	sub.expect(want...)
 }
 
-// runTransport is a transport that takes runs (RunPublisher), applying them on this node only; it records the length
+// runTransport is a transport that takes runs, applying them on this node only; it records the length
 // of each run and fails the updates whose data is fail.
 type runTransport struct {
 	*fakeTransport
@@ -342,7 +342,7 @@ func (r *runTransport) PublishRun(_ context.Context, us []*Update) []error {
 	r.fakeTransport.mu.Lock()
 	h := r.fakeTransport.hub
 	r.fakeTransport.mu.Unlock()
-	ApplyRun(h, ok)
+	h.ApplyRun(ok)
 	return errs
 }
 

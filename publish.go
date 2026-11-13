@@ -216,18 +216,17 @@ func (h *Hub) servePublishStream(w http.ResponseWriter, r *http.Request, g *gran
 		}
 	}
 	// Updates that arrive in a row (the next line already read) and ask for no copies are published together, up to
-	// runLen, through a transport that takes them so: each subscriber is woken once for them and writes them in one
+	// runLen: each subscriber is woken once for them and writes them in one
 	// go, instead of once for each. The run goes out as soon as the next read would wait for the client, and before
 	// any other publish or answer, so a lone update is published as soon as it is read.
 	var run []*Update
 	var runAt, runLine []int // the index in out of each update's answer, and its line
-	rp, _ := h.transport.(RunPublisher)
 	runLen := h.runLen()
 	publishRun := func() {
 		if len(run) == 0 {
 			return
 		}
-		errs := h.publishRun(r.Context(), rp, run)
+		errs := h.publishRun(r.Context(), run)
 		for i, u := range run {
 			if errs != nil && errs[i] != nil {
 				status, msg := h.publishFailed(errs[i])
@@ -306,7 +305,7 @@ func (h *Hub) servePublishStream(w http.ResponseWriter, r *http.Request, g *gran
 			out = append(out, streamAck{Line: line, Status: status, Error: msg})
 			continue
 		}
-		if rp != nil && u.Replicas == 0 {
+		if u.Replicas == 0 {
 			out = append(out, streamAck{}) // answered once the run is published
 			run, runAt, runLine = append(run, u), append(runAt, len(out)-1), append(runLine, line)
 			if len(run) >= runLen || in.Buffered() == 0 {

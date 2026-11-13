@@ -2,18 +2,15 @@ package cluster_test
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/paularlott/gossiper"
 	"github.com/paularlott/gossiper/cluster"
 )
 
@@ -179,74 +176,6 @@ func TestStreamRunSplit(t *testing.T) {
 	}
 	if d := nodes[0].tr.Dropped(); d != 0 {
 		t.Errorf("dropped %d", d)
-	}
-}
-
-// v030 is the cluster transport as a 0.3.0 node uses it: it neither publishes runs (it is not a
-// gossiper.RunPublisher) nor applies them (the host it hands the transport is not a gossiper.RunApplier). The messages
-// between the nodes are 0.3.0's either way: 0.4.0 sends a run in the batches 0.3.0 already sent.
-type v030 struct{ tr *cluster.Transport }
-
-type hostOnly struct{ gossiper.Host }
-
-func (v v030) Start(h gossiper.Host) error { return v.tr.Start(hostOnly{h}) }
-func (v v030) Publish(ctx context.Context, u *gossiper.Update) error {
-	return v.tr.Publish(ctx, u)
-}
-func (v v030) PublishCopies(ctx context.Context, u *gossiper.Update, n int) (func(context.Context) error, error) {
-	return v.tr.PublishCopies(ctx, u, n)
-}
-func (v v030) RemoteSubscriptions(ctx context.Context) ([]gossiper.Subscription, bool, error) {
-	return v.tr.RemoteSubscriptions(ctx)
-}
-func (v v030) NodeID() string { return v.tr.NodeID() }
-func (v v030) Close() error   { return v.tr.Close() }
-
-// A cluster in a rolling upgrade: a node that publishes and applies an update at a time (0.3.0) and nodes that do
-// both in runs exchange updates both ways, every subscriber getting them in order, each once.
-func TestStreamRunsMixedVersions(t *testing.T) {
-	nodes := newCluster(t, clusterOpts{n: 3, node: func(i int, o *nodeOpts) {
-		if i == 2 {
-			o.hub = func(c *gossiper.Config) { c.Transport = v030{c.Transport.(*cluster.Transport)} }
-		}
-	}})
-	var subs []*sseClient
-	for _, n := range nodes {
-		subs = append(subs, n.subscribe(t, subOpts{topics: []string{topicA, topicB}}))
-	}
-	c := newClient(t)
-	var want []string
-	for _, from := range []int{0, 2, 1} {
-		var lines []string
-		for i := range 300 {
-			data := fmt.Sprintf("n%d-%d", from, i)
-			topic := topicA
-			if i%4 == 0 {
-				topic = topicB
-			}
-			want = append(want, data)
-			lines = append(lines, streamLine(topic, data))
-		}
-		for i, a := range streamPublish(t, nodes[from].url(), "", pubTokenCached, lines) {
-			if a.ID == "" || a.Status != 0 {
-				t.Fatalf("node %d, answer %d: %+v", from, i, a)
-			}
-		}
-		// And a POST after the stream, as a browser publishes.
-		data := fmt.Sprintf("n%d-post", from)
-		nodes[from].publish(t, c, url.Values{"topic": {topicA}, "data": {data}})
-		want = append(want, data)
-		for _, s := range subs {
-			s.wait(t, len(want))
-		}
-	}
-	for _, s := range subs {
-		expectData(t, s, want)
-	}
-	for _, n := range nodes {
-		if d := n.tr.Dropped(); d != 0 {
-			t.Errorf("node %s dropped %d", n.addr, d)
-		}
 	}
 }
 

@@ -16,6 +16,11 @@ type Transport interface {
 	// Publish replicates u, already stamped and given its ID, to every node. It returns once u is applied on this
 	// node and on its way to the others.
 	Publish(ctx context.Context, u *Update) error
+	// PublishRun publishes us, each already stamped and given its ID, in order, as Publish publishes each, and hands
+	// every node's hub the run through Host.ApplyRun. The hub calls it with the updates that arrived in a row on one
+	// streaming publish, none asking for copies. It returns nil when all are published, or each update's error (nil
+	// for those published).
+	PublishRun(ctx context.Context, us []*Update) []error
 	// RemoteSubscriptions returns the active subscriptions of the other nodes, and whether every node answered.
 	RemoteSubscriptions(ctx context.Context) (subs []Subscription, complete bool, err error)
 	// NodeID returns this node's id in the cluster.
@@ -28,6 +33,9 @@ type Transport interface {
 type Host interface {
 	// Apply applies an update published on any node.
 	Apply(u *Update)
+	// ApplyRun applies us, in order, as Apply applies each, but together: each subscriber is woken once for the
+	// updates of the run it receives, instead of once for each.
+	ApplyRun(us []*Update)
 	// Restore applies an update retained from before this node restarted.
 	Restore(u *Update)
 	// LocalSubscriptions returns the active subscriptions of this node's subscribers.
@@ -36,34 +44,6 @@ type Host interface {
 	// oldest first, about maxBytes of them (at least one), and whether more follow: a node that starts copies a
 	// peer's history with it.
 	History(stamp uint64, origin string, maxBytes int) (updates []*Update, more bool)
-}
-
-// RunPublisher is a Transport that publishes several updates in one go (the local and cluster transports, and the
-// Tenants' share of either). The hub hands it a run of updates that arrived in a row on one streaming publish, none
-// asking for copies; a transport without it is handed them one at a time.
-type RunPublisher interface {
-	// PublishRun publishes us, each already stamped and given its ID, in order, as Publish publishes each, and hands
-	// every node's hub the run through RunApplier.ApplyRun where the hub has it (Apply otherwise). It returns nil when
-	// all are published, or each update's error (nil for those published).
-	PublishRun(ctx context.Context, us []*Update) []error
-}
-
-// RunApplier is a Host that applies a run of updates together: each subscriber is woken once for the updates of the
-// run it receives, instead of once for each. A *Hub and the Tenants are RunAppliers.
-type RunApplier interface {
-	// ApplyRun applies us, in order, as Apply applies each.
-	ApplyRun(us []*Update)
-}
-
-// ApplyRun hands us to h as one run when h is a RunApplier, one at a time otherwise. Transports call it.
-func ApplyRun(h Host, us []*Update) {
-	if ra, ok := h.(RunApplier); ok {
-		ra.ApplyRun(us)
-		return
-	}
-	for _, u := range us {
-		h.Apply(u)
-	}
 }
 
 // Subscription is one active subscription: a subscriber and one of its topic matchers. A draft-07 subscription
@@ -97,7 +77,7 @@ func (l *local) Publish(_ context.Context, u *Update) error {
 }
 
 func (l *local) PublishRun(_ context.Context, us []*Update) []error {
-	ApplyRun(l.h, us)
+	l.h.ApplyRun(us)
 	return nil
 }
 

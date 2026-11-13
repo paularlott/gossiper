@@ -21,10 +21,10 @@ A publish is answered once the node that took it has applied it and queued it fo
 - Each node sends its updates to each peer in order, and resends a batch the peer does not acknowledge while the peer is in the cluster.
 - What is queued for a peer that leaves, or more than 64 MiB for one that cannot keep up, is dropped and counted in `gossiper_replication_dropped_total`.
 - When a dropped peer comes back (it restarted, or a network split healed), the two exchange what was published while they were apart.
-- Updates a peer cannot decode (a node of another version during an upgrade) are dropped rather than sent forever.
+- Updates a peer cannot decode are dropped rather than sent forever.
 - A streaming publish's [run](streaming-and-go-client.md#streaming-publish) is queued for each peer at once, so it goes in one batch (a batch holds up to 1 MiB; a larger run is split over several, in order). The peer applies each batch as runs of up to 64 updates, waking each subscriber once per run.
 
-**Rolling upgrade from 0.3:** 0.4 sends the same messages as 0.3; it only queues a run at once and applies each batch it receives as runs. Nodes of both versions exchange updates either way, and a 0.3 node applies a batch an update at a time, as before.
+**Every node must run the same version.** Clusters that mix versions are not supported.
 
 Order is per node: two services publishing to one topic through two nodes may be seen interleaved differently on different nodes. A replay from the history is ordered the same everywhere.
 

@@ -433,8 +433,8 @@ func (h *Hub) runLen() int {
 }
 
 // publishRun publishes validated updates that arrived in a row on one stream, none asking for copies, as publish
-// publishes each, through a transport that takes them together (rp). It returns nil, or each update's error.
-func (h *Hub) publishRun(ctx context.Context, rp RunPublisher, us []*Update) []error {
+// publishes each, through the transport's PublishRun. It returns nil, or each update's error.
+func (h *Hub) publishRun(ctx context.Context, us []*Update) []error {
 	for _, u := range us {
 		ts := h.clock.Now()
 		u.Stamp = uint64(ts)
@@ -445,7 +445,7 @@ func (h *Hub) publishRun(ctx context.Context, rp RunPublisher, us []*Update) []e
 		}
 		u.encoded = nil
 	}
-	errs := rp.PublishRun(ctx, us)
+	errs := h.transport.PublishRun(ctx, us)
 	n := len(us)
 	for _, err := range errs {
 		if err != nil {
@@ -456,7 +456,7 @@ func (h *Hub) publishRun(ctx context.Context, rp RunPublisher, us []*Update) []e
 	return errs
 }
 
-// ApplyRun implements RunApplier: it applies us as Apply applies each, but runLen at a time, each run recorded
+// ApplyRun implements Host: it applies us as Apply applies each, but runLen at a time, each run recorded
 // first and then sent to the subscribers, each subscriber all of its updates of the run in a row: it is woken once
 // for them, and writes them together. Transports call it for runs published on this node or another.
 func (h *Hub) ApplyRun(us []*Update) {

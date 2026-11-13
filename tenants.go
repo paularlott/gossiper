@@ -140,11 +140,10 @@ func (s *tenantSet) others(name string) []Tenant {
 }
 
 var (
-	_ Host         = (*Tenants)(nil)
-	_ RunApplier   = (*Tenants)(nil)
-	_ RunApplier   = (*Hub)(nil)
-	_ RunPublisher = (*tenantTransport)(nil)
-	_ RunPublisher = (*local)(nil)
+	_ Host      = (*Tenants)(nil)
+	_ Host      = (*Hub)(nil)
+	_ Transport = (*tenantTransport)(nil)
+	_ Transport = (*local)(nil)
 )
 
 // ErrNoTenant is returned (wrapped) by SetHosts and Remove for a tenant the Tenants do not have.
@@ -515,7 +514,7 @@ func (ts *Tenants) Apply(u *Update) {
 	}
 }
 
-// ApplyRun implements RunApplier: each tenant's updates of the run go to its hub as one run, in order.
+// ApplyRun implements Host: each tenant's updates of the run go to its hub as one run, in order.
 func (ts *Tenants) ApplyRun(us []*Update) {
 	hubs := ts.set.Load().hubs
 	first := 0
@@ -741,25 +740,12 @@ func (t *tenantTransport) Publish(ctx context.Context, u *Update) error {
 	return t.shared.Publish(ctx, u)
 }
 
-// PublishRun implements RunPublisher: through the shared transport's PublishRun when it has one, an update at a time
-// otherwise.
+// PublishRun implements Transport: through the shared transport's PublishRun.
 func (t *tenantTransport) PublishRun(ctx context.Context, us []*Update) []error {
 	for _, u := range us {
 		u.Tenant = t.tenant
 	}
-	if rp, ok := t.shared.(RunPublisher); ok {
-		return rp.PublishRun(ctx, us)
-	}
-	var errs []error
-	for i, u := range us {
-		if err := t.shared.Publish(ctx, u); err != nil {
-			if errs == nil {
-				errs = make([]error, len(us))
-			}
-			errs[i] = err
-		}
-	}
-	return errs
+	return t.shared.PublishRun(ctx, us)
 }
 
 // PublishCopies implements Replicator for a shared transport that does.
