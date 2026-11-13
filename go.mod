@@ -5,7 +5,7 @@ go 1.27.4
 require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
-	github.com/paularlott/cli v0.10.2
+	github.com/paularlott/cli v0.10.3
 	github.com/paularlott/gossip v0.31.0
 	github.com/paularlott/gossiper/client v1.0.0
 	github.com/paularlott/logger v0.4.0
