@@ -416,9 +416,6 @@ func TestSubscriptionsAPIRemoteMerging(t *testing.T) {
 	if len(l.Subscriptions) != 3 { // local, remote-1, remote-2; the repeated local one is merged
 		t.Fatalf("merged %d: %s", len(l.Subscriptions), r.body)
 	}
-	if r.header.Get("Warning") != "" {
-		t.Fatalf("complete answer carries a warning: %q", r.header.Get("Warning"))
-	}
 	for _, s := range l.Subscriptions {
 		if s.Type != "Subscription" {
 			t.Fatalf("remote subscription not reformatted: %+v", s)
@@ -433,21 +430,30 @@ func TestSubscriptionsAPIRemoteMerging(t *testing.T) {
 		t.Fatalf("remote single: %d %s", one.code, one.body)
 	}
 
-	// Partial: some nodes did not answer. What did answer is served, with a warning.
+	tok := tokenFor(t, nil, all)
+	unavailable := func(what, path string) {
+		t.Helper()
+		r := e.do(t, "GET", e.srv.URL+path, bearer(tok), "")
+		if r.code != http.StatusServiceUnavailable || r.header.Get("Retry-After") == "" || strings.Contains(r.body, "urn:uuid:") {
+			t.Fatalf("%s: %d, Retry-After %q, %s", what, r.code, r.header.Get("Retry-After"), r.body)
+		}
+	}
+	// Partial: some nodes did not answer. A list is not served as if it were complete: 503, try again.
 	ft.complete = false
-	l, r = getListing(t, e, subsBase)
-	if len(l.Subscriptions) != 3 || !strings.Contains(r.header.Get("Warning"), "incomplete") {
-		t.Fatalf("partial: %d subscriptions, warning %q", len(l.Subscriptions), r.header.Get("Warning"))
+	unavailable("partial list", subsBase)
+	unavailable("partial list by topic", subsBase+"/t")
+	// A subscription found is served even so; one not found may be on a node that did not answer: 503, not 404.
+	if r := e.do(t, "GET", e.srv.URL+remote("other", "urn:uuid:remote-2").ID, bearer(tok), ""); r.code != 200 ||
+		!strings.Contains(r.body, "urn:uuid:remote-2") {
+		t.Fatalf("partial, found: %d %s", r.code, r.body)
 	}
-	// Failed: only the local subscriptions, with a warning.
+	unavailable("partial, not found", remote("t", "urn:uuid:gone").ID)
+	// Failed: no node answered.
 	ft.complete, ft.remote, ft.remoteErr = true, nil, errors.New("gossip down")
-	l, r = getListing(t, e, subsBase)
-	if len(l.Subscriptions) != 1 || !strings.Contains(r.header.Get("Warning"), "incomplete") {
-		t.Fatalf("failed: %d subscriptions, warning %q", len(l.Subscriptions), r.header.Get("Warning"))
-	}
-	// A missing single subscription on a partial answer is still a 404.
-	ft.remoteErr, ft.complete = nil, false
-	if r := e.do(t, "GET", e.srv.URL+remote("t", "urn:uuid:gone").ID, bearer(tokenFor(t, nil, all)), ""); r.code != 404 {
+	unavailable("failed list", subsBase)
+	// Complete again: a subscription that does not exist is a 404.
+	ft.remoteErr = nil
+	if r := e.do(t, "GET", e.srv.URL+remote("t", "urn:uuid:gone").ID, bearer(tok), ""); r.code != 404 {
 		t.Fatalf("unknown: %d", r.code)
 	}
 }

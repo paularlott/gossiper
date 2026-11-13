@@ -130,7 +130,8 @@ func (h *Hub) serveSubscriptions(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), subscriptionsTimeout)
 	remote, complete, err := h.transport.RemoteSubscriptions(ctx)
 	cancel()
-	if err != nil || !complete {
+	incomplete := err != nil || !complete
+	if incomplete {
 		h.log.Warn("subscriptions API: not every node answered", "error", errString(err))
 	}
 	subs = append(subs, remote...)
@@ -145,6 +146,13 @@ func (h *Hub) serveSubscriptions(w http.ResponseWriter, r *http.Request) {
 	}
 	slices.SortFunc(out, func(a, b Subscription) int { return strings.Compare(a.ID, b.ID) })
 	out = slices.CompactFunc(out, func(a, b Subscription) bool { return a.ID == b.ID })
+	// Without every node's answer a list may be missing subscriptions, and a subscription not found may exist on a
+	// node that did not answer: neither is served as if it were the answer. A subscription found is.
+	if incomplete && (q.subscriber == "" || len(out) == 0) {
+		w.Header().Set("Retry-After", "2")
+		writeError(w, http.StatusServiceUnavailable, "not every node answered: try again")
+		return
+	}
 
 	hd := w.Header()
 	if modern {
@@ -159,9 +167,6 @@ func (h *Hub) serveSubscriptions(w http.ResponseWriter, r *http.Request) {
 	hd.Set("Cache-Control", "private, must-revalidate")
 	hd.Add("Vary", "Authorization")
 	hd.Add("Vary", "Cookie")
-	if !complete || err != nil {
-		hd.Set("Warning", `199 - "incomplete: not every node answered"`)
-	}
 	var body []byte
 	if q.subscriber != "" {
 		if len(out) == 0 {

@@ -25,9 +25,9 @@ const (
 	maxSummary = 256 << 10
 	// requestTimeout bounds each request of an anti-entropy round.
 	requestTimeout = 5 * time.Second
-	// A round with a node that just joined (or every peer, at startup) that fails is tried again after retryAfter,
-	// then after twice as long each time, up to maxRetryAfter, until one completes or the node leaves the group: a
-	// node that restarts may take a while to answer (it loads its database and history first).
+	// A round that fails (with a node that just joined, with every peer at startup, or a periodic one) is tried again
+	// after retryAfter, then after twice as long each time, up to maxRetryAfter, until one completes or the node leaves
+	// the group: a node that restarts may take a while to answer (it loads its database and history first).
 	retryAfter    = time.Second
 	maxRetryAfter = 30 * time.Second
 )
@@ -401,25 +401,20 @@ func (s *Store) syncLoop() {
 		case <-s.syncWake:
 		case <-retry.C:
 		case <-tick.C:
-			if n := s.randomPeer(); n != nil {
-				_ = s.syncWith(n)
+			// Any peer may be picked, one counted synced too, so a peer that stops answering is found out; a round
+			// that fails is then tried again, as one with a node that joined is.
+			if n := s.randomPeer(); n != nil && s.syncWith(n) != nil {
+				s.queueSync(n.ID, 1)
 			}
 		}
 	}
 }
 
-// randomPeer returns a random alive peer of the group, one whose last round did not complete (or that has had none)
-// when there is such a peer; nil when there is none alive.
+// randomPeer returns a random alive peer of the group; nil when there is none.
 func (s *Store) randomPeer() *gossip.Node {
 	peers := slices.DeleteFunc(s.peers(), func(n *gossip.Node) bool { return !n.Alive() })
 	if len(peers) == 0 {
 		return nil
-	}
-	s.smu.Lock()
-	unsynced := slices.DeleteFunc(slices.Clone(peers), func(n *gossip.Node) bool { return s.synced[n.ID] })
-	s.smu.Unlock()
-	if len(unsynced) > 0 {
-		peers = unsynced
 	}
 	return peers[rand.IntN(len(peers))]
 }

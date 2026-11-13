@@ -190,6 +190,18 @@ func TestRejoinSyncsWhenPeerAnswersLate(t *testing.T) {
 	}
 }
 
+// A peer counted synced that stops answering is found out by the periodic rounds, even while another peer keeps
+// failing (whose retries must not take every round).
+func TestSyncedPeerThatStopsAnsweringIsUncounted(t *testing.T) {
+	tc := newCluster(t, 3, periodic())
+	n := tc.nodes
+	waitFor(t, waitMax, "every round", func() bool { return n[0].store().Stats().PeersSynced == 2 })
+	n[2].store().RefuseRoundsFor(time.Hour)
+	waitFor(t, waitMax, "the refusing peer to be uncounted", func() bool { return n[0].store().Stats().PeersSynced == 1 })
+	n[1].store().RefuseRoundsFor(time.Hour)
+	waitFor(t, waitMax, "the second refusing peer to be uncounted", func() bool { return n[0].store().Stats().PeersSynced == 0 })
+}
+
 // Writes made on both sides of a partition reach every node once it heals.
 func TestPartitionedWritesPropagate(t *testing.T) {
 	tc := newCluster(t, 3, periodic())

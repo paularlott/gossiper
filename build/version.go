@@ -4,7 +4,7 @@ package build
 var (
 	// Version is the current version of gossiper. The release tasks read it (scripts/getversion) to tag and name
 	// the release.
-	Version = "0.4.3"
+	Version = "0.4.4"
 
 	// Date is the date the binary was built, set at link time (-ldflags "-X github.com/paularlott/gossiper/build.Date=...").
 	Date string

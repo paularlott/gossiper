@@ -857,9 +857,6 @@ func TestSubscriptionsAPIRemoteNodes(t *testing.T) {
 	if _, docs := decodeCollection(t, r.body); r.code != 200 || len(docs) != 1 || docs[0].Type != "subscription" || docs[0].Subscriber != "urn:uuid:remote-1" || string(docs[0].Payload) != `{"node":"b"}` {
 		t.Fatalf("%d %s", r.code, r.body)
 	}
-	if r.header.Get("Warning") != "" {
-		t.Fatalf("Warning %q though every node answered", r.header.Get("Warning"))
-	}
 	r = e.get(t, e.srv.URL+escPath("exact", "https://example.com/remote", "urn:uuid:remote-1"), bearer(api))
 	if r.code != 200 {
 		t.Fatalf("%d %s", r.code, r.body)
@@ -868,7 +865,12 @@ func TestSubscriptionsAPIRemoteNodes(t *testing.T) {
 	ft.complete = false
 	ft.mu.Unlock()
 	r = e.get(t, e.srv.URL+subsBase, bearer(api))
-	if r.code != 200 || r.header.Get("Warning") == "" {
-		t.Fatalf("%d, Warning %q: an incomplete answer must say so", r.code, r.header.Get("Warning"))
+	if r.code != 503 || r.header.Get("Retry-After") == "" {
+		t.Fatalf("%d, Retry-After %q: an incomplete list must not be served as the answer", r.code, r.header.Get("Retry-After"))
+	}
+	// The remote subscription itself is found, so it is served.
+	r = e.get(t, e.srv.URL+escPath("exact", "https://example.com/remote", "urn:uuid:remote-1"), bearer(api))
+	if r.code != 200 {
+		t.Fatalf("found on an incomplete answer: %d %s", r.code, r.body)
 	}
 }

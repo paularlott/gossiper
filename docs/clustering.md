@@ -26,6 +26,8 @@ A publish is answered once the node that took it has applied it and queued it fo
 
 **Every node must run the same version.** Clusters that mix versions are not supported.
 
+The subscriptions API asks every node for its subscriptions. When one does not answer within 5 seconds, a list (or a subscription not found) is answered with `503` and `Retry-After`, never as a partial answer; a single subscription that is found is served.
+
 Order is per node: two services publishing to one topic through two nodes may be seen interleaved differently on different nodes. A replay from the history is ordered the same everywhere.
 
 ## Copies and idempotent publishes

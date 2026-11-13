@@ -239,8 +239,8 @@ func bareNode(t testing.TB) (*gossip.Cluster, string) {
 	return gc, addr
 }
 
-// TestSubscriptionsWithUnresponsiveNode: a node of the group that never answers makes the subscriptions API
-// incomplete, but it still returns what the others said within its timeout. Publishing is not held up by it.
+// TestSubscriptionsWithUnresponsiveNode: a node of the group that never answers makes the subscriptions API answer
+// 503 (try again) within its timeout rather than serve a partial list as the answer. Publishing is not held up by it.
 func TestSubscriptionsWithUnresponsiveNode(t *testing.T) {
 	nodes := newCluster(t, clusterOpts{n: 3, node: withSubscriptions})
 	a, b, c := nodes[0], nodes[1], nodes[2]
@@ -281,18 +281,16 @@ func TestSubscriptionsWithUnresponsiveNode(t *testing.T) {
 		t.Errorf("RemoteSubscriptions took %v with a 500ms deadline", d)
 	}
 
-	// Over HTTP: the hub waits at most its own timeout (5s) and answers with what it has.
+	// Over HTTP: the hub waits at most its own timeout (5s), then answers 503 with Retry-After, not a partial list.
 	start = time.Now()
-	doc, hd := listSubscriptions(t, a, "")
+	status, hd, body := getSubscriptions(t, a, "")
 	took := time.Since(start)
 	if took > 8*time.Second {
 		t.Errorf("the subscriptions API took %v to answer; its timeout is 5s", took)
 	}
-	if !strings.Contains(hd.Get("Warning"), "incomplete") {
-		t.Errorf("Warning header %q: the answer is incomplete and should say so", hd.Get("Warning"))
-	}
-	if got := len(doc.Subscriptions); got != wantRemote+1 {
-		t.Errorf("incomplete answer lists %d subscriptions, want %d (the live nodes')", got, wantRemote+1)
+	if status != http.StatusServiceUnavailable || hd.Get("Retry-After") == "" || strings.Contains(string(body), "example.com") {
+		t.Errorf("incomplete answer: status %d, Retry-After %q, body %s; want 503, a Retry-After and no list", status,
+			hd.Get("Retry-After"), body)
 	}
 
 	// Publishing does not wait for the node that does not answer.
@@ -321,9 +319,9 @@ func TestSubscriptionsWithUnresponsiveNode(t *testing.T) {
 		return true
 	})
 	start = time.Now()
-	doc, hd = listSubscriptions(t, a, "")
-	if hd.Get("Warning") != "" || len(doc.Subscriptions) != wantRemote+1 || time.Since(start) > 3*time.Second {
-		t.Errorf("after the node left: warning %q, %d subscriptions, took %v", hd.Get("Warning"), len(doc.Subscriptions), time.Since(start))
+	doc, _ := listSubscriptions(t, a, "") // 200 again: listSubscriptions fails the test otherwise
+	if len(doc.Subscriptions) != wantRemote+1 || time.Since(start) > 3*time.Second {
+		t.Errorf("after the node left: %d subscriptions, took %v", len(doc.Subscriptions), time.Since(start))
 	}
 }
 
