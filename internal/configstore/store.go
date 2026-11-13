@@ -170,6 +170,8 @@ type Store struct {
 	msgFetch   gossip.MessageType
 	syncWake   chan struct{}
 
+	refuseUntil atomic.Int64 // tests: rounds asked of this node fail until then (unix nanoseconds)
+
 	smu      sync.Mutex
 	queue    []queued               // peers to sync with before the next random round
 	synced   map[gossip.NodeID]bool // peers whose last round completed

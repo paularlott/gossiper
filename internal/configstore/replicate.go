@@ -25,10 +25,11 @@ const (
 	maxSummary = 256 << 10
 	// requestTimeout bounds each request of an anti-entropy round.
 	requestTimeout = 5 * time.Second
-	// retryAfter is how long a sync with a node that just joined waits before it is tried again, after it failed;
-	// it is tried syncAttempts times before the periodic rounds are left to repair what it missed.
-	retryAfter   = time.Second
-	syncAttempts = 3
+	// A round with a node that just joined (or every peer, at startup) that fails is tried again after retryAfter,
+	// then after twice as long each time, up to maxRetryAfter, until one completes or the node leaves the group: a
+	// node that restarts may take a while to answer (it loads its database and history first).
+	retryAfter    = time.Second
+	maxRetryAfter = 30 * time.Second
 )
 
 // wireRecord is a Record in a message.
@@ -241,6 +242,9 @@ func (s *Store) handleRecords(_ *gossip.Node, p *gossip.Packet) (any, error) {
 }
 
 func (s *Store) handleDigest(_ *gossip.Node, p *gossip.Packet) (any, error) {
+	if time.Now().UnixNano() < s.refuseUntil.Load() { // tests: a node still starting up
+		return nil, errors.New("configstore: not answering rounds yet")
+	}
 	var req digestReq
 	if err := p.Unmarshal(&req); err != nil {
 		return nil, err
@@ -306,14 +310,28 @@ type queued struct {
 	after    time.Time // not before
 }
 
-// queueSync asks the sync loop for a round with node id, after a delay.
+// queueSync asks the sync loop for a round with node id: at once for a first attempt, after retryDelay for the
+// next ones.
 func (s *Store) queueSync(id gossip.NodeID, attempts int) {
 	s.smu.Lock()
 	if !slices.ContainsFunc(s.queue, func(q queued) bool { return q.id == id }) {
-		s.queue = append(s.queue, queued{id: id, attempts: attempts, after: time.Now().Add(time.Duration(attempts) * retryAfter)})
+		s.queue = append(s.queue, queued{id: id, attempts: attempts, after: time.Now().Add(retryDelay(attempts))})
 	}
 	s.smu.Unlock()
 	s.wakeSync()
+}
+
+// retryDelay is how long the attempt-th try of a round waits: nothing for the first, then retryAfter, doubling up
+// to maxRetryAfter.
+func retryDelay(attempt int) time.Duration {
+	if attempt <= 0 {
+		return 0
+	}
+	d := retryAfter
+	for i := 1; i < attempt && d < maxRetryAfter; i++ {
+		d *= 2
+	}
+	return min(d, maxRetryAfter)
 }
 
 func (s *Store) wakeSync() {
@@ -367,7 +385,7 @@ func (s *Store) syncLoop() {
 			if n == nil || !s.group.Contains(q.id) {
 				continue
 			}
-			if s.syncWith(n) != nil && q.attempts+1 < syncAttempts {
+			if s.syncWith(n) != nil {
 				s.queueSync(q.id, q.attempts+1)
 			}
 		}
@@ -390,11 +408,18 @@ func (s *Store) syncLoop() {
 	}
 }
 
-// randomPeer returns a random alive peer of the group; nil when there is none.
+// randomPeer returns a random alive peer of the group, one whose last round did not complete (or that has had none)
+// when there is such a peer; nil when there is none alive.
 func (s *Store) randomPeer() *gossip.Node {
 	peers := slices.DeleteFunc(s.peers(), func(n *gossip.Node) bool { return !n.Alive() })
 	if len(peers) == 0 {
 		return nil
+	}
+	s.smu.Lock()
+	unsynced := slices.DeleteFunc(slices.Clone(peers), func(n *gossip.Node) bool { return s.synced[n.ID] })
+	s.smu.Unlock()
+	if len(unsynced) > 0 {
+		peers = unsynced
 	}
 	return peers[rand.IntN(len(peers))]
 }

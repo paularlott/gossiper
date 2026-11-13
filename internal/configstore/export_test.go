@@ -1,5 +1,7 @@
 package configstore
 
+import "time"
+
 // Merge applies records as if a peer had sent them; it returns how many changed the store.
 func (s *Store) Merge(recs []Record) (int, error) { return s.merge(recs) }
 
@@ -11,6 +13,10 @@ func (s *Store) MergeFromPeer(recs []Record) (int, error) {
 	}
 	return s.merge(s.fromWire(ws))
 }
+
+// RefuseRoundsFor makes the anti-entropy rounds peers ask of this store fail for d, as a node still starting up
+// would.
+func (s *Store) RefuseRoundsFor(d time.Duration) { s.refuseUntil.Store(time.Now().Add(d).UnixNano()) }
 
 // All returns every record, tombstones too, sorted by key.
 func (s *Store) All() []Record {

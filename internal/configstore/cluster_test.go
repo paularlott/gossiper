@@ -169,6 +169,27 @@ func TestNodeDownCatchesUp(t *testing.T) {
 	waitSame(t, n...)
 }
 
+// A node that restarts while its peer cannot answer rounds yet (still starting, say) keeps trying, beyond a few
+// seconds, until a round completes: without periodic rounds, the peer is counted synced again.
+func TestRejoinSyncsWhenPeerAnswersLate(t *testing.T) {
+	tc := newCluster(t, 2, pushOnly) // no periodic rounds: only the rounds queued at join can do it
+	n := tc.nodes
+	waitFor(t, waitMax, "the join rounds", func() bool {
+		return n[0].store().Stats().PeersSynced == 1 && n[1].store().Stats().PeersSynced == 1
+	})
+
+	n[1].stop()
+	tc.waitPeers(n[0])
+	n[0].store().RefuseRoundsFor(12 * time.Second) // well past three tries a second apart
+	n[1].boot([]string{n[0].addr})
+	waitFor(t, waitMax, "the restarted node's round with its peer", func() bool {
+		return n[1].store().Stats().PeersSynced == 1
+	})
+	if st := n[1].store().Stats(); st.SyncErrors < 3 {
+		t.Fatalf("the peer refused rounds, yet only %d failed: %+v", st.SyncErrors, st)
+	}
+}
+
 // Writes made on both sides of a partition reach every node once it heals.
 func TestPartitionedWritesPropagate(t *testing.T) {
 	tc := newCluster(t, 3, periodic())
