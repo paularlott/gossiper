@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -265,4 +267,97 @@ func TestRotateAcrossCluster(t *testing.T) {
 	expect(t, nodes[1].base, a.host, map[string]int{keyA: 200, keyB: 200})
 	call(t, nodes[0].base, "DELETE", "/api/tenants/alpha/previous-keys", apiToken, nil)
 	expect(t, nodes[1].base, a.host, map[string]int{keyA: 401, keyB: 200})
+}
+
+// A rotation restarts the tenant's hub: a subscriber that reconnects with its old token (still accepted) and its last
+// event ID misses nothing published meanwhile, whichever key published it.
+func TestRotateLosesNoUpdates(t *testing.T) {
+	n := startNode(t, adminSettings(t, ""))
+	a := rotationTenant(t, n)
+	q := url.Values{"match": {"https://example.com/r"}}
+	sub := accessToken(t, keyA, a.host, "subscribe")
+	first := openStream(t, n.base, a.host, sub, q, "")
+	time.Sleep(100 * time.Millisecond)
+	mustPost(t, n.base, a.host, accessToken(t, keyA, a.host, "publish"), url.Values{"topic": {"https://example.com/r"}, "data": {"before"}})
+	eventually(t, 5*time.Second, "the first event", func() bool { return len(first.real()) == 1 })
+
+	api(t, n.base, "POST", "/api/tenants/alpha/rotate", map[string]any{"publisher_key": keyB}, 200)
+	select { // the hub starts over: the stream ends, as with any change of keys
+	case <-first.closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stream did not end when the tenant's hub started over")
+	}
+	mustPost(t, n.base, a.host, accessToken(t, keyB, a.host, "publish"), url.Values{"topic": {"https://example.com/r"}, "data": {"with-new"}})
+	mustPost(t, n.base, a.host, accessToken(t, keyA, a.host, "publish"), url.Values{"topic": {"https://example.com/r"}, "data": {"with-old"}})
+
+	first.mu.Lock()
+	last := first.ids[len(first.ids)-1]
+	first.mu.Unlock()
+	again := openStream(t, n.base, a.host, sub, q, last) // the old token, which the grace period still accepts
+	eventually(t, 5*time.Second, "the updates published while it was away", func() bool {
+		return slices.Equal(again.real(), []string{"with-new", "with-old"})
+	})
+}
+
+// With --protocol both, draft-07 tokens signed with the previous key are accepted too.
+func TestRotateDraft07Tokens(t *testing.T) {
+	s := adminSettings(t, "")
+	s.Protocol = "both"
+	n := startNode(t, s)
+	a := rotationTenant(t, n)
+	draft := func(secret string) int {
+		code, _ := postForm(t, n.base, a.host, tenantToken(t, secret, []string{"*"}, nil), url.Values{"topic": {"x"}, "data": {"y"}})
+		return code
+	}
+	api(t, n.base, "POST", "/api/tenants/alpha/rotate", map[string]any{"publisher_key": keyB}, 200)
+	eventually(t, 5*time.Second, "draft-07 tokens of both keys", func() bool { return draft(keyA) == 200 && draft(keyB) == 200 })
+	if code := draft(keyC); code != 401 {
+		t.Errorf("draft-07 token of another key: %d, want 401", code)
+	}
+	call(t, n.base, "DELETE", "/api/tenants/alpha/previous-keys", apiToken, nil)
+	eventually(t, 5*time.Second, "the previous key refused", func() bool { return draft(keyA) == 401 && draft(keyB) == 200 })
+}
+
+// Previous keys are in the database: a node that restarts during a grace period still accepts them.
+func TestPreviousKeysSurviveRestart(t *testing.T) {
+	s := adminSettings(t, "")
+	n := startNode(t, s)
+	a := rotationTenant(t, n)
+	api(t, n.base, "POST", "/api/tenants/alpha/rotate", map[string]any{"publisher_key": keyB}, 200)
+	expect(t, n.base, a.host, map[string]int{keyA: 200, keyB: 200})
+	if err := n.stop(); err != nil {
+		t.Fatal(err)
+	}
+	n = startNode(t, s)
+	eventually(t, 5*time.Second, "alpha served again", func() bool { return serves(t, n, tn{name: "alpha", host: a.host, secret: keyB}) })
+	expect(t, n.base, a.host, map[string]int{keyA: 200, keyB: 200, keyC: 401})
+}
+
+// An identity provider's token rotates only the tenants it may write.
+func TestRotateNeedsWriteOnTheTenant(t *testing.T) {
+	p := newFakeIDP(t)
+	n := startNode(t, idpSettings(t, p))
+	rotationTenant(t, n)
+	b := tn{name: "bravo", host: "bravo.test", secret: keyC}
+	api(t, n.base, "POST", "/api/tenants", b.spec(t), 201)
+
+	alphaOnly := p.token(t, details(map[string]any{"actions": []string{"write"}, "tenants": []string{"alpha"}}))
+	readAll := p.token(t, details(map[string]any{"actions": []string{"read"}}))
+	// In order: the refusals, then what the token may do.
+	for _, tc := range []struct {
+		name, tok, method, path string
+		body                    any
+		want                    int
+	}{
+		{"other tenant", alphaOnly, "POST", "/api/tenants/bravo/rotate", map[string]any{"publisher_key": keyB}, 403},
+		{"other's previous keys", alphaOnly, "DELETE", "/api/tenants/bravo/previous-keys", nil, 403},
+		{"read only", readAll, "POST", "/api/tenants/alpha/rotate", map[string]any{"publisher_key": keyB}, 403},
+		{"read only previous keys", readAll, "DELETE", "/api/tenants/alpha/previous-keys", nil, 403},
+		{"its tenant", alphaOnly, "POST", "/api/tenants/alpha/rotate", map[string]any{"publisher_key": keyB}, 200},
+		{"its previous keys", alphaOnly, "DELETE", "/api/tenants/alpha/previous-keys", nil, 204},
+	} {
+		if code, out := call(t, n.base, tc.method, tc.path, tc.tok, tc.body); code != tc.want {
+			t.Errorf("%s: %d %v, want %d", tc.name, code, out, tc.want)
+		}
+	}
 }
