@@ -44,6 +44,7 @@ tasks:
   webassets:
     desc: Build the API description and reference (web/dist, embedded in the binary) with Node.js
     dir: web
+    run: once # several tasks depend on it, in parallel: one npm ci at a time
     cmds:
       - npm ci --no-audit --no-fund --ignore-scripts
       - npm run build
@@ -99,7 +100,7 @@ tasks:
 
   all:
     desc: Build zipped binaries for every platform into bin/
-    deps: [webassets, legal]
+    deps: [legal] # legal builds the web assets first
     cmds:
       - task: build-platform
         vars: { PLATFORM: "{{.ITEM}}" }
