@@ -21,6 +21,10 @@ type entry struct {
 	recv hlc.Timestamp // this node's clock when it applied the update (never below the update's stamp)
 	at   time.Time     // when it was applied, for the age bound
 	size int
+	// run names the run the update was applied in (see Hub.ApplyRun), 0 for one applied alone. The updates of a run
+	// are all recorded before any is sent, and each subscriber is sent its updates of the run in order, in one go, so
+	// one that has an update of a run has every earlier one of it: none is a late arrival for another.
+	run uint64
 }
 
 // history is the node's record of recent updates, in stamp order, bounded by count, bytes and age. Updates usually
@@ -57,8 +61,13 @@ func newHistory(maxCount int, maxBytes int64, maxAge, window time.Duration) *his
 
 // addAt is add for an update applied at a given time (zero: now), for the age bound.
 func (h *history) addAt(u *Update, recv hlc.Timestamp, at time.Time) bool {
+	return h.addRun(u, recv, at, 0)
+}
+
+// addRun is addAt for an update applied in run (0: alone).
+func (h *history) addRun(u *Update, recv hlc.Timestamp, at time.Time, run uint64) bool {
 	k := key{u.Origin, u.Stamp}
-	e := &entry{u: u, recv: recv, size: u.size()}
+	e := &entry{u: u, recv: recv, size: u.size(), run: run}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.seen(k) {
@@ -149,7 +158,7 @@ func (h *history) adopt(o *history) {
 		if h.seen(key{e.u.Origin, e.u.Stamp}) || h.maxCount <= 0 && h.maxBytes <= 0 {
 			continue
 		}
-		h.insert(&entry{u: e.u, recv: e.recv, at: e.at, size: e.size})
+		h.insert(&entry{u: e.u, recv: e.recv, at: e.at, size: e.size, run: e.run})
 	}
 	h.trim()
 }
@@ -313,7 +322,8 @@ func (h *history) last() string {
 // accepts (all with nil), in stamp order, and whether the cursor was found; with cursor "earliest", everything held.
 //
 // That is every update ordered after the cursor's, and the late arrivals: updates ordered up to window before it
-// that this node applied after the cursor's update was published. A subscriber that saw the cursor's update on
+// that this node applied after the cursor's update was published, other than those applied in the same run as it
+// (see entry.run). A subscriber that saw the cursor's update on
 // another node may not have seen those, since they reached the hub after it; one that did gets them twice, which
 // is better than never. Updates older than the window are never sent again.
 //
@@ -344,7 +354,7 @@ func (h *history) replay(cursor string, keep func(*Update) bool) (out []*Update,
 	}
 	first := -1 // the index of the earliest late arrival kept
 	for j := i - 1; j >= 0 && hlc.Timestamp(live[j].u.Stamp) > from; j-- {
-		if live[j].recv > lo && (keep == nil || keep(live[j].u)) {
+		if live[j].recv > lo && (c.run == 0 || live[j].run != c.run) && (keep == nil || keep(live[j].u)) {
 			out = append(out, live[j].u)
 			first = j
 		}

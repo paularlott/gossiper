@@ -74,6 +74,7 @@ type Hub struct {
 	applyMu     sync.RWMutex // guards applyClosed, and applying.Add against Close
 	applyClosed bool
 	applying    sync.WaitGroup // updates being applied: Close waits for them, so none is stored after it returns
+	runs        atomic.Uint64  // the runs applied, naming each (see entry.run)
 
 	since uint64        // updates stamped before it were a former tenant's of this name (Config.since)
 	stop  chan struct{} // ends the housekeeping loop
@@ -411,7 +412,7 @@ func (h *Hub) Apply(u *Update) { h.apply(u, false) }
 func (h *Hub) Restore(u *Update) { h.apply(u, true) }
 
 func (h *Hub) apply(u *Update, restored bool) {
-	if !h.record(u, restored) {
+	if !h.record(u, restored, 0) {
 		return
 	}
 	defer h.applying.Done()
@@ -475,8 +476,9 @@ func (h *Hub) applyRun(us []*Update) {
 	}
 	var buf [runMax]*Update
 	run := buf[:0]
+	id := h.runs.Add(1)
 	for _, u := range us {
-		if h.record(u, false) {
+		if h.record(u, false, id) {
 			run = append(run, u)
 		}
 	}
@@ -490,8 +492,9 @@ func (h *Hub) applyRun(us []*Update) {
 }
 
 // record records u in the history (and the store) before it is sent to the subscribers: false when it is not to be
-// sent (refused, a duplicate, or the hub is closing). On true the caller calls applying.Done once u is sent.
-func (h *Hub) record(u *Update, restored bool) bool {
+// sent (refused, a duplicate, or the hub is closing). On true the caller calls applying.Done once u is sent. run
+// names the run u is applied in, 0 when it is applied alone.
+func (h *Hub) record(u *Update, restored bool, run uint64) bool {
 	if u == nil || len(u.Topics) == 0 || u.ID == "" {
 		return false
 	}
@@ -536,7 +539,7 @@ func (h *Hub) record(u *Update, restored bool) bool {
 		h.applying.Done()
 		return false
 	}
-	if !h.hist.addAt(u, recv, at) {
+	if !h.hist.addRun(u, recv, at, run) {
 		h.stats.Duplicates.Add(1)
 		h.applying.Done()
 		return false

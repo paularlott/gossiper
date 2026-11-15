@@ -372,6 +372,25 @@ func TestHistorySinceLateArrival(t *testing.T) {
 	sameIDs(t, got, "late-1", "late-2", "after-1", "after-2")
 }
 
+// TestHistorySinceRunNotLate: the updates of a run are all stamped before any is applied, so each is applied after
+// the later ones were stamped; a subscriber resuming from one of them has the earlier ones of its run (they were
+// sent to it before, in the same write), so they are not sent again. A late arrival from outside the run still is.
+func TestHistorySinceRunNotLate(t *testing.T) {
+	h, _ := newTestHistory(100, 0, 0, 5*time.Second)
+	applied := at(10*time.Second + 50*time.Millisecond) // after every stamp of the run
+	for i := range 5 {
+		h.addRun(upd("a", fmt.Sprintf("r%d", i), at(10*time.Second+time.Duration(i)*time.Millisecond)), applied, time.Time{}, 7)
+	}
+	h.add(upd("b", "late", at(10*time.Second+time.Millisecond+time.Microsecond)), applied) // inside the run's stamps, alone
+	h.addRun(upd("a", "next-run", at(11*time.Second)), at(11*time.Second+time.Millisecond), time.Time{}, 8)
+
+	got, ok := h.since("r3")
+	if !ok {
+		t.Fatal("cursor not found")
+	}
+	sameIDs(t, got, "late", "r4", "next-run")
+}
+
 func TestHistorySinceLateArrivalOutOfOrderAdds(t *testing.T) {
 	h, _ := newTestHistory(100, 0, 0, 5*time.Second)
 	h.add(upd("a", "cursor", at(10*time.Second)), at(10*time.Second+time.Millisecond))
